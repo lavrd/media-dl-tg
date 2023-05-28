@@ -1,2 +1,2 @@
 drop table media;
-drop table user;
+drop table users;

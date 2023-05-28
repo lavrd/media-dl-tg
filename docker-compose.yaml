@@ -1,0 +1,14 @@
+version: "3.9"
+services:
+  media-dl-tg:
+    image: ghcr.io/lavrd/media-dl-tg
+    env_file:
+      - .env
+    environment:
+      DATABASE_FILEPATH: /run/database/media_dl_tg.db
+    volumes:
+      - ./files:/run/database
+  tg-bot-api-server:
+    image: ghcr.io/lavrd/tg-bot-api-server
+    env_file:
+      - .env

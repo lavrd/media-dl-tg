@@ -1,3 +1,9 @@
+test:
+	@go test -count=1 -v .
+
+lint: 
+	@golangci-lint run ./...
+
 docker_build:
 	@docker build -t media-dl-tg -f Dockerfile .
 
