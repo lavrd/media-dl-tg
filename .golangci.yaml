@@ -1,0 +1,74 @@
+run:
+  timeout: 1m
+  allow-parallel-runners: true
+  tests: true
+
+linters-settings:
+  errcheck:
+    check-type-assertions: true
+    check-blank: true
+  gocritic:
+    enabled-tags:
+      - diagnostic
+      - performance
+      - style
+      - experimental
+    disabled-checks:
+      - whyNoLint
+  govet:
+    enable-all: true
+  lll:
+    line-length: 120
+  unused:
+    check-exported: false
+  whitespace:
+    multi-if: true
+    multi-func: true
+  nolintlint:
+    require-explanation: true
+  goconst:
+    min-len: 2
+    min-occurrences: 2
+  misspell:
+    locale: US
+
+linters:
+  enable:
+    - goconst
+    - errcheck
+    - megacheck
+    - govet
+    - unconvert
+    - gosec
+    - gofmt
+    - goimports
+    - gocyclo
+    - dupl
+    - misspell
+    - lll
+    - unused
+    - whitespace
+    - nolintlint
+    - godox
+    - typecheck
+    - ineffassign
+    - stylecheck
+    - gochecknoinits
+    - gochecknoglobals
+    - exportloopref
+    - staticcheck
+    - gocritic
+    - nakedret
+    - gosimple
+    - asasalint
+    - asciicheck
+    - errchkjson
+    - goerr113
+    - prealloc
+    - errorlint
+    - makezero
+    - durationcheck
+    - revive
+    - unparam
+  disable-all: true
+  fast: false
