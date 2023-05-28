@@ -1,0 +1,4 @@
+.DS_Store
+.env
+/media
+media_dl_tg.db
