@@ -1,4 +1,4 @@
-# telegram-bot-api-server
+# tg-bot-api-server
 
 
 ## Build
