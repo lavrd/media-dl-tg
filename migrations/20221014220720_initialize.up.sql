@@ -24,7 +24,7 @@ create table media
     uri           text                                                 not null,
     title         text                                                 not null default '',
     state         text check ( state in ('pending', 'error', 'done') ) not null default 'pending',
-    media_type    text check (media_type in ('audio', 'video'))        not null,
+    type          text check ( type in ('audio', 'video') )            not null,
     created_at    datetime                                             not null default CURRENT_TIMESTAMP,
     updated_at    datetime                                             not null default CURRENT_TIMESTAMP,
     -- When media was successfully downloaded.
