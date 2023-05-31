@@ -1,8 +1,11 @@
 test:
-	@go test -count=1 -v .
+	@go test -count=1 -v -coverprofile=cover.out ./internal/...
 
 lint: 
 	@golangci-lint run ./...
+
+coverage:
+	@go tool cover -html=cover.out
 
 docker_build:
 	@docker build -t media-dl-tg -f Dockerfile .

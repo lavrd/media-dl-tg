@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite3"
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jmoiron/sqlx"
 
 	"media-dl-tg/internal/types"
@@ -20,19 +22,17 @@ const (
 	ModeRWC    = "rwc"
 )
 
-// todo: add contexts to functions
 type UsersRepository interface {
-	Create(tgUserID int64) (*types.User, error)
-	Get(tgUserID int64) (*types.User, error)
+	Create(ctx context.Context, tgUserID int64) (*types.User, error)
+	Get(ctx context.Context, tgUserID int64) (*types.User, error)
 }
 
-// todo: add contexts to functions
 type MediaRepository interface {
-	Create(userID int64, tgMessageID int, uri string, typ types.MediaType) (*types.Media, error)
-	GetInProgress(userID int64) ([]*types.Media, error)
-	UpdateTitle(id int64, title string) error
-	UpdateState(id int64, state types.MediaState) error
-	DeleteInProgress() error
+	Create(ctx context.Context, userID int64, tgMessageID int, uri string, typ types.MediaType) (*types.Media, error)
+	GetInProgress(ctx context.Context, userID int64) ([]*types.Media, error)
+	UpdateTitle(ctx context.Context, id int64, title string) error
+	UpdateState(ctx context.Context, id int64, state types.MediaState) error
+	DeleteInProgress(ctx context.Context) error
 }
 
 func OpenDBAndMigrate(filePath, mode string) (*sqlx.DB, error) {
@@ -52,7 +52,7 @@ func OpenDBAndMigrate(filePath, mode string) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new driver: %w", err)
 	}
-	m, err := migrate.NewWithDatabaseInstance("file://migrations", driver, drv)
+	m, err := migrate.NewWithDatabaseInstance("file://../../migrations", driver, drv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new migration manager: %w", err)
 	}
@@ -83,26 +83,36 @@ type user struct {
 	LastEventAt time.Time `db:"last_event_at"`
 }
 
-func (u user) ToTypes() types.User { return types.User{} }
+func (u *user) ToTypes() *types.User {
+	return &types.User{
+		ID:              u.ID,
+		TgUserID:        u.TgUserID,
+		AudioMaxSize:    u.AudioMaxSize,
+		VideoMaxSize:    u.VideoMaxSize,
+		PlaylistMaxSize: u.PlaylistMaxSize,
+		CreatedAt:       u.CreatedAt,
+		LastEventAt:     u.LastEventAt,
+	}
+}
 
 type usersRepository struct {
 	db *sqlx.DB
 }
 
-func (r *usersRepository) Create(tgUserID int64) (*types.User, error) {
-	user := &types.User{}
-	if err := r.db.Get(user, "insert into users (tg_user_id) VALUES ($1) returning *", tgUserID); err != nil {
+func (r *usersRepository) Create(ctx context.Context, tgUserID int64) (*types.User, error) {
+	user := &user{}
+	if err := r.db.GetContext(ctx, user, "insert into users (tg_user_id) VALUES ($1) returning *", tgUserID); err != nil {
 		return nil, fmt.Errorf("failed to get: %w", err)
 	}
-	return user, nil
+	return user.ToTypes(), nil
 }
 
-func (r *usersRepository) Get(tgUserID int64) (*types.User, error) {
-	user := &types.User{}
-	if err := r.db.Get(user, "select * from users where tg_user_id = $1", tgUserID); err != nil {
+func (r *usersRepository) Get(ctx context.Context, tgUserID int64) (*types.User, error) {
+	user := &user{}
+	if err := r.db.GetContext(ctx, user, "select * from users where tg_user_id = $1", tgUserID); err != nil {
 		return nil, fmt.Errorf("failed to get: %w", err)
 	}
-	return user, nil
+	return user.ToTypes(), nil
 }
 
 //nolint:govet // for better reading and keep as it in .sql files
@@ -122,45 +132,63 @@ type media struct {
 	DoneAt *time.Time `db:"done_at"`
 }
 
-func (m media) ToTypes() types.Media { return types.Media{} }
+func (m *media) ToTypes() *types.Media {
+	return &types.Media{
+		ID:          m.ID,
+		UserID:      m.UserID,
+		TgMessageID: m.TgMessageID,
+		URI:         m.URI,
+		Title:       m.Title,
+		State:       m.State,
+		Type:        m.Type,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
+		DoneAt:      m.DoneAt,
+	}
+}
 
 type mediaRepository struct {
 	db *sqlx.DB
 }
 
 func (r *mediaRepository) Create(
+	ctx context.Context,
 	userID int64, tgMessageID int, uri string, typ types.MediaType,
 ) (*types.Media, error) {
 
-	media := &types.Media{}
-	if err := r.db.Get(media, `
+	media := &media{}
+	if err := r.db.GetContext(ctx, media, `
 		insert into media (user_id, tg_message_id, uri, type) VALUES ($1, $2, $3, $4) returning *
 	`,
 		userID, tgMessageID, uri, typ,
 	); err != nil {
 		return nil, fmt.Errorf("failed to get: %w", err)
 	}
-	return media, nil
+	return media.ToTypes(), nil
 }
 
-func (r *mediaRepository) GetInProgress(userID int64) ([]*types.Media, error) {
-	multimedia := make([]*types.Media, 0)
-	if err := r.db.Select(
-		&multimedia, "select * from media where user_id = $1 and state = 'pending'", userID,
+func (r *mediaRepository) GetInProgress(ctx context.Context, userID int64) ([]*types.Media, error) {
+	multimedia := make([]*media, 0)
+	if err := r.db.SelectContext(ctx, &multimedia,
+		"select * from media where user_id = $1 and state = 'pending'", userID,
 	); err != nil {
 		return nil, fmt.Errorf("failed to select: %w", err)
 	}
-	return multimedia, nil
+	out := make([]*types.Media, len(multimedia))
+	for i, m := range multimedia {
+		out[i] = m.ToTypes()
+	}
+	return out, nil
 }
 
-func (r *mediaRepository) UpdateTitle(id int64, title string) error {
-	if _, err := r.db.Exec("update media set title = $1 where id = $2", title, id); err != nil {
+func (r *mediaRepository) UpdateTitle(ctx context.Context, id int64, title string) error {
+	if _, err := r.db.ExecContext(ctx, "update media set title = $1 where id = $2", title, id); err != nil {
 		return fmt.Errorf("failed to exec: %w", err)
 	}
 	return nil
 }
 
-func (r *mediaRepository) UpdateState(id int64, state types.MediaState) error {
+func (r *mediaRepository) UpdateState(ctx context.Context, id int64, state types.MediaState) error {
 	doneAt := sql.NullTime{}
 	if state == types.DoneMediaState {
 		doneAt = sql.NullTime{
@@ -168,7 +196,7 @@ func (r *mediaRepository) UpdateState(id int64, state types.MediaState) error {
 			Valid: true,
 		}
 	}
-	if _, err := r.db.Exec(
+	if _, err := r.db.ExecContext(ctx,
 		"update media set state = $1, updated_at = current_timestamp, done_at = $2 where id = $3",
 		state, doneAt, id,
 	); err != nil {
@@ -177,8 +205,8 @@ func (r *mediaRepository) UpdateState(id int64, state types.MediaState) error {
 	return nil
 }
 
-func (r *mediaRepository) DeleteInProgress() error {
-	_, err := r.db.Exec("delete from media where state = 'pending'")
+func (r *mediaRepository) DeleteInProgress(ctx context.Context) error {
+	_, err := r.db.ExecContext(ctx, "delete from media where state = 'pending'")
 	if err != nil {
 		return fmt.Errorf("failed to exec: %w", err)
 	}
