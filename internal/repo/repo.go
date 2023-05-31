@@ -15,11 +15,13 @@ import (
 	"media-dl-tg/internal/types"
 )
 
-const (
-	driver = "sqlite3"
+const driver = "sqlite3"
 
-	ModeMemory = "memory"
-	ModeRWC    = "rwc"
+type Mode string
+
+const (
+	ModeMemory Mode = "memory"
+	ModeRWC    Mode = "rwc"
 )
 
 type UsersRepository interface {
@@ -35,7 +37,7 @@ type MediaRepository interface {
 	DeleteInProgress(ctx context.Context) error
 }
 
-func OpenDBAndMigrate(filePath, mode string) (*sqlx.DB, error) {
+func OpenDBAndMigrate(filePath string, mode Mode) (*sqlx.DB, error) {
 	dsn := fmt.Sprintf(
 		"file:%s?cache=shared&mode=%s&_foreign_keys=1",
 		filePath, mode,
@@ -68,7 +70,7 @@ func New(db *sqlx.DB) (UsersRepository, MediaRepository) {
 	return usersRepo, mediaReo
 }
 
-//nolint:govet // for better reading and keep as it in .sql files
+//nolint:govet // disable field aligment for better reading and keep as it in .sql files
 type user struct {
 	ID       int64 `db:"id"`
 	TgUserID int64 `db:"tg_user_id"`
@@ -115,7 +117,7 @@ func (r *usersRepository) Get(ctx context.Context, tgUserID int64) (*types.User,
 	return user.ToTypes(), nil
 }
 
-//nolint:govet // for better reading and keep as it in .sql files
+//nolint:govet // disable field aligment for better reading and keep as it in .sql files
 type media struct {
 	ID     int64 `db:"id"`
 	UserID int64 `db:"user_id"`

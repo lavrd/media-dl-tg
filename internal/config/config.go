@@ -8,7 +8,7 @@ import (
 	"media-dl-tg/internal/types"
 )
 
-//nolint:govet // for better reading
+//nolint:govet // disable field aligment for better reading
 type Config struct {
 	Verbose               bool
 	TgBotToken            string

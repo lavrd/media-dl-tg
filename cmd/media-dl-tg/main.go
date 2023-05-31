@@ -40,6 +40,11 @@ const (
 	cbCMTValDelimiter = ":"
 )
 
+const (
+	minChunkSize int64 = 1024 * 100 // 100kb
+	maxChunkSize int64 = 1024 * 200 // 200kb
+)
+
 func main() {
 	log.Logger = log.
 		Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).
@@ -183,7 +188,6 @@ func (b *bot) handleMessages() {
 			if user == nil {
 				continue
 			}
-
 			switch {
 			case update.Message != nil:
 				b.handleMessage(update.Message, user)
@@ -615,7 +619,7 @@ func (d *downloader) requestChunk(chunk *chunk) (*bytes.Buffer, time.Duration, e
 		}
 	}()
 
-	// Download media to temporary buffer.
+	// Download media chunk to temporary buffer.
 	buf := bytes.NewBuffer([]byte{})
 	start := time.Now()
 	_, err = io.CopyN(buf, res.Body, chunk.size)
@@ -664,17 +668,16 @@ func runWorkers(taskC chan task, count int) {
 	}
 }
 
-//nolint:govet // for better reading
 type downloadChunkTask struct {
 	downloader *downloader
-	// Current chunk number.
-	num int64
 	// Wait group to wait until all started download chunk tasks will be finished.
 	wg *atomic.Int64
 	// Using it to stop waiting for completed previous chunks as they can be in error state.
 	stopC chan struct{}
 	// Notify about error.
 	errC chan error
+	// Current chunk number.
+	num int64
 }
 
 func newDownloadChunkTask(
@@ -700,17 +703,16 @@ func (t *downloadChunkTask) do() {
 	t.errC <- nil
 }
 
-//nolint:govet // for better reading
 type downloadPlaylistTask struct {
 	tg            *tgbotapi.BotAPI
 	message       *tgbotapi.Message
 	user          *types.User
-	mediaID       int64
 	mediaLink     *types.MediaLink
 	mediaRepo     repo.MediaRepository
 	taskC         chan task
-	chunksWorkers int
 	doneC         chan struct{}
+	chunksWorkers int
+	mediaID       int64
 }
 
 func newDownloadPlaylistTask(
@@ -886,10 +888,8 @@ func (t *downloadMediaTask) download() error {
 }
 
 func getRandomChunkSize() int64 {
-	var min int64 = 1024 * 100 // 100kb
-	var max int64 = 1024 * 200 // 200kb
 	//nolint:gosec // it is ok to have weak generator
-	return rand.Int63n(max-min) + min
+	return rand.Int63n(maxChunkSize-minChunkSize) + minChunkSize
 }
 
 type job interface {

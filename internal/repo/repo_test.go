@@ -247,7 +247,7 @@ func getMultimedia(r *require.Assertions, db *sqlx.DB, userID int64) []*media {
 
 // media is a copy of the same structure from repo.go.
 //
-//nolint:govet // for better reading and keep as it in .sql files
+//nolint:govet // disable field aligment for better reading and keep as it in .sql files
 type media struct {
 	ID          int64            `db:"id"`
 	UserID      int64            `db:"user_id"`
