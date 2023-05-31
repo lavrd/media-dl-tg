@@ -6,13 +6,14 @@ import (
 	"media-dl-tg/internal/types"
 )
 
-// todo: describe all fields and why we need them
 type Meta struct {
-	ID       string
+	// Human URL to resource.
+	URL      string
 	Title    string
 	Duration time.Duration
-	Size     int64
-	RawURL   string
+	Size     int64 // in bytes
+	// Raw URL to download resource from.
+	RawURL string
 }
 
 type Playlist struct {
@@ -21,7 +22,6 @@ type Playlist struct {
 
 func (p Playlist) Size() int64 { return int64(len(p.Media)) }
 
-// todo: describe all functions and why we need them
 type Plugin interface {
 	GetMeta() (*Meta, error)
 	GetPlaylist() (*Playlist, error)

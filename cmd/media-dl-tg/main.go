@@ -74,7 +74,7 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to open database and do migrations")
 	}
 	usersRepo, mediaRepo := repo.New(db)
-	err = mediaRepo.DeleteInProgress()
+	err = mediaRepo.DeleteInProgress(context.TODO())
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to delete media in progress")
 	}
@@ -251,7 +251,7 @@ func (b *bot) handleCommand(message *tgbotapi.Message, user *types.User) {
 	case "me":
 		reply(b.tg, message, strconv.Itoa(int(message.From.ID)))
 	case "pending":
-		media, err := b.mediaRepo.GetInProgress(user.ID)
+		media, err := b.mediaRepo.GetInProgress(context.TODO(), user.ID)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to get media in progress")
 			reply500(b.tg, message)
@@ -278,13 +278,13 @@ func (b *bot) handleCommand(message *tgbotapi.Message, user *types.User) {
 // Return user as nil if we don't need to continue flow; for example if user is banned.
 func (b *bot) checkUser(tgUserID, chatID int64) (*types.User, error) {
 	logger := log.With().Int64("tg_user_id", tgUserID).Logger()
-	user, err := b.usersRepo.Get(tgUserID)
+	user, err := b.usersRepo.Get(context.TODO(), tgUserID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		logger.Debug().Msg("new user")
-		if _, err := b.usersRepo.Create(tgUserID); err != nil {
+		if _, err := b.usersRepo.Create(context.TODO(), tgUserID); err != nil {
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
 		send(b.tg, chatID, "Send link to start downloading")
@@ -319,7 +319,7 @@ func (b *bot) handleChooseMediaTypeCallback(
 	/*
 		Following code protects from multiple simultaneously downloads by one user.
 	*/
-	multimedia, err := b.mediaRepo.GetInProgress(user.ID)
+	multimedia, err := b.mediaRepo.GetInProgress(context.TODO(), user.ID)
 	if err != nil {
 		reply500(b.tg, message)
 		return
@@ -328,7 +328,7 @@ func (b *bot) handleChooseMediaTypeCallback(
 		reply(b.tg, message, "You already have media which are in progress")
 		return
 	}
-	media, err := b.mediaRepo.Create(user.ID, message.MessageID, mediaLink.URI, mediaLink.Type)
+	media, err := b.mediaRepo.Create(context.TODO(), user.ID, message.MessageID, mediaLink.URI, mediaLink.Type)
 	if err != nil {
 		reply500(b.tg, message)
 		return
@@ -445,18 +445,15 @@ func (d *downloader) download(
 	var plugin plugin.Plugin
 	meta, err := plugin.GetMeta()
 	if err != nil {
-		// todo: check error
-		return nil, fmt.Errorf(": %w", err)
+		return nil, fmt.Errorf("failed to get meta info from plugin: %w", err)
 	}
 	d.meta = meta
 
 	if meta.Duration == 0 {
-		// todo: or data is empty
-		return nil, fmt.Errorf("we don't support to download streams: %w", types.ErrInternal)
+		return nil, fmt.Errorf("we don't support to download streams or media is empty: %w", types.ErrInternal)
 	}
 
-	// d.title = meta.Title
-	if err = d.mediaRepo.UpdateTitle(mediaID, meta.Title); err != nil {
+	if err = d.mediaRepo.UpdateTitle(context.TODO(), mediaID, meta.Title); err != nil {
 		log.Error().Err(err).
 			Int64("media_id", mediaID).Str("title", meta.Title).
 			Msg("failed to update media title")
@@ -763,23 +760,22 @@ func (t *downloadPlaylistTask) download() error {
 	var plugin plugin.Plugin
 	playlist, err := plugin.GetPlaylist()
 	if err != nil {
-		//todo: check error
-		return fmt.Errorf(": %w", err)
+		return fmt.Errorf("failed to get playlist info from plugin: %w", err)
 	}
 
 	if t.user.PlaylistMaxSize < playlist.Size() {
 		return fmt.Errorf("sent playlist size is more than allowed: %w", types.ErrSizeExceeded)
 	}
 	for _, entry := range playlist.Media {
-		media, err := t.mediaRepo.Create(t.user.ID, t.message.MessageID, t.mediaLink.URI, t.mediaLink.Type)
+		media, err := t.mediaRepo.Create(context.TODO(), t.user.ID, t.message.MessageID, t.mediaLink.URI, t.mediaLink.Type)
 		if err != nil {
 			log.Error().Err(err).Int64("user_id", t.user.ID).Msg("failed to create new media from playlist")
 			continue
 		}
-		mediaLink := &types.MediaLink{URI: entry.ID, Type: t.mediaLink.Type}
+		mediaLink := &types.MediaLink{URI: entry.URL, Type: t.mediaLink.Type}
 		t.taskC <- newDownloadMediaTask(t.tg, t.message, t.user, media, mediaLink, t.mediaRepo, t.chunksWorkers, t.doneC)
 	}
-	if err := t.mediaRepo.UpdateState(t.mediaID, types.DoneMediaState); err != nil {
+	if err := t.mediaRepo.UpdateState(context.TODO(), t.mediaID, types.DoneMediaState); err != nil {
 		log.Error().Err(err).Int64("media_id", t.mediaID).Msg("failed to set playlist as done")
 	}
 	return nil
@@ -821,7 +817,7 @@ func (t *downloadMediaTask) do() {
 	case err == nil:
 	case errors.Is(err, types.ErrSizeExceeded):
 		reply(t.tg, t.message, "Media size is more than you allowed to download")
-		if err = t.mediaRepo.UpdateState(t.media.ID, types.DoneMediaState); err != nil {
+		if err = t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.DoneMediaState); err != nil {
 			log.Error().Err(err).Int64("media_id", t.media.ID).Msg("failed to update state")
 		}
 	default:
@@ -829,7 +825,7 @@ func (t *downloadMediaTask) do() {
 			Int64("media_id", t.media.ID).Str("media_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
 			Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
 			Msg("failed to download media")
-		if err := t.mediaRepo.UpdateState(t.media.ID, types.ErrorMediaState); err != nil {
+		if err := t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.ErrorMediaState); err != nil {
 			log.Error().Err(err).Int64("media_id", t.media.ID).Msg("failed to update media state to error")
 		}
 		reply500(t.tg, t.message)
@@ -887,7 +883,7 @@ func (t *downloadMediaTask) download() error {
 	}
 	logger.Info().Msg("media sent to chat successfully")
 
-	if err := t.mediaRepo.UpdateState(t.media.ID, types.DoneMediaState); err != nil {
+	if err := t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.DoneMediaState); err != nil {
 		logger.Error().Err(err).Msg("failed to update media state to done")
 	}
 
