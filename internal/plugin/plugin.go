@@ -8,12 +8,12 @@ import (
 
 type Meta struct {
 	// Human URL to resource.
-	URL      string
-	Title    string
-	Duration time.Duration
-	Size     int64 // in bytes
+	URL   string
+	Title string
 	// Raw URL to download resource from.
-	RawURL string
+	RawURL   string
+	Size     int64 // in bytes
+	Duration time.Duration
 }
 
 type Playlist struct {

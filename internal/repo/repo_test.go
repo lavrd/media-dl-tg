@@ -90,10 +90,11 @@ func TestMediaRepository(t *testing.T) {
 		r.Empty(multimedia)
 	})
 
-	var mediaID int64 = 0
+	var mediaID int64
 
 	t.Run("test multimedia creation", func(t *testing.T) {
-		media, err := mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.AudioMediaType)
+		var media *types.Media
+		media, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.AudioMediaType)
 		r.NoError(err)
 		r.Equal(int64(1), media.ID)
 		r.NotEmpty(media.TgMessageID)
@@ -138,7 +139,7 @@ func TestMediaRepository(t *testing.T) {
 	})
 
 	t.Run("test that after creating new multimedia length will be increased", func(t *testing.T) {
-		_, err := mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.VideoMediaType)
+		_, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.VideoMediaType)
 		r.NoError(err)
 
 		multimedia := getMultimedia(r, db, user.ID)
@@ -157,7 +158,8 @@ func TestMediaRepository(t *testing.T) {
 
 	t.Run("test getting pending multimedia", func(t *testing.T) {
 		// Check get pending multimedia.
-		multimedia, err := mediaRepo.GetInProgress(ctx, user.ID)
+		var multimedia []*types.Media
+		multimedia, err = mediaRepo.GetInProgress(ctx, user.ID)
 		r.NoError(err)
 		r.NotNil(multimedia)
 		//nolint:godox // will resolve it later
@@ -178,14 +180,16 @@ func TestMediaRepository(t *testing.T) {
 	})
 
 	t.Run("test creation with incorrect media type", func(t *testing.T) {
-		media, err := mediaRepo.Create(ctx, user.ID, tgMessageID, uri, "asd")
+		var media *types.Media
+		media, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, "asd")
 		r.Error(err)
 		r.Contains(err.Error(), "CHECK constraint failed")
 		r.Nil(media)
 	})
 
 	t.Run("test unknown user id", func(t *testing.T) {
-		media, err := mediaRepo.Create(ctx, 123, tgMessageID, uri, types.AudioMediaType)
+		var media *types.Media
+		media, err = mediaRepo.Create(ctx, 123, tgMessageID, uri, types.AudioMediaType)
 		r.Error(err)
 		r.Contains(err.Error(), "FOREIGN KEY constraint failed")
 		r.Nil(media)
@@ -193,10 +197,11 @@ func TestMediaRepository(t *testing.T) {
 
 	t.Run("test delete media in progress", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
-			_, err := mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.AudioMediaType)
+			_, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.AudioMediaType)
 			r.NoError(err)
 		}
-		multimedia, err := mediaRepo.GetInProgress(ctx, user.ID)
+		var multimedia []*types.Media
+		multimedia, err = mediaRepo.GetInProgress(ctx, user.ID)
 		r.NoError(err)
 		r.Len(multimedia, 4)
 
@@ -241,6 +246,8 @@ func getMultimedia(r *require.Assertions, db *sqlx.DB, userID int64) []*media {
 }
 
 // media is a copy of the same structure from repo.go.
+//
+//nolint:govet // for better reading and keep as it in .sql files
 type media struct {
 	ID          int64            `db:"id"`
 	UserID      int64            `db:"user_id"`

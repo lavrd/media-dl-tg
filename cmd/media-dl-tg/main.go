@@ -31,13 +31,9 @@ import (
 	"media-dl-tg/internal/types"
 )
 
-// todo: delete
-const defaultTimeoutDur = time.Second * 10
-
-const maxTgAPIFileSize = 50 * 1024 * 1024 // 50mb
-
-// todo: rename or move all?
 const (
+	maxTgAPIFileSize = 50 * 1024 * 1024 // 50mb
+
 	topicChooseMediaType = "cmt"
 
 	cbDelimiter       = "@"
@@ -56,16 +52,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// todo: test it
 	if cfg.Verbose {
 		log.Logger = log.Level(zerolog.TraceLevel)
 	}
 
 	// We don't need to keep files in media folder after restart because we can't use them.
-	if err := os.RemoveAll(cfg.MediaFolder); err != nil {
+	if err = os.RemoveAll(cfg.MediaFolder); err != nil {
 		log.Fatal().Err(err).Msg("failed to delete media folder")
 	}
-	if err := os.Mkdir(cfg.MediaFolder, os.ModePerm); err != nil {
+	if err = os.Mkdir(cfg.MediaFolder, os.ModePerm); err != nil {
 		log.Fatal().Err(err).Msg("failed to create folder")
 	}
 
@@ -432,8 +427,8 @@ type downloader struct {
 	mediaRepo   repo.MediaRepository
 	manager     *chunkManager
 	file        *os.File
-	mediaFolder string
 	meta        *plugin.Meta
+	mediaFolder string
 	// Number of workers to download chunks in parallel.
 	chunksWorkers int
 }
@@ -442,8 +437,8 @@ func (d *downloader) download(
 	mediaLink *types.MediaLink, user *types.User, mediaID int64, doneC chan struct{},
 ) (*mediaInfo, error) {
 
-	var plugin plugin.Plugin
-	meta, err := plugin.GetMeta()
+	var plug plugin.Plugin
+	meta, err := plug.GetMeta()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get meta info from plugin: %w", err)
 	}
@@ -462,7 +457,6 @@ func (d *downloader) download(
 	switch mediaLink.Type {
 	case types.AudioMediaType:
 		if meta.Size > user.AudioMaxSize {
-			// todo: unite somehow with error below because only first word is different
 			return nil, fmt.Errorf("audio size exceeded: %d: %w", meta.Size, types.ErrSizeExceeded)
 		}
 	case types.VideoMediaType:
@@ -473,6 +467,7 @@ func (d *downloader) download(
 		return nil, fmt.Errorf("unknown media type: %s: %w", mediaLink.Type, types.ErrInternal)
 	}
 
+	//nolint:gosec // it is ok to have weak generator
 	id := rand.Uint64()
 	path := strings.NewReplacer(" ", "_", "/", "_").Replace(meta.Title)
 	path = fmt.Sprintf("%s-%d.mp4", path, id)
@@ -757,8 +752,8 @@ func (t *downloadPlaylistTask) do() {
 }
 
 func (t *downloadPlaylistTask) download() error {
-	var plugin plugin.Plugin
-	playlist, err := plugin.GetPlaylist()
+	var plug plugin.Plugin
+	playlist, err := plug.GetPlaylist()
 	if err != nil {
 		return fmt.Errorf("failed to get playlist info from plugin: %w", err)
 	}
@@ -782,14 +777,14 @@ func (t *downloadPlaylistTask) download() error {
 }
 
 type downloadMediaTask struct {
+	mediaRepo     repo.MediaRepository
 	tg            *tgbotapi.BotAPI
 	message       *tgbotapi.Message
 	user          *types.User
 	media         *types.Media
 	mediaLink     *types.MediaLink
-	mediaRepo     repo.MediaRepository
-	mediaFolder   string
 	doneC         chan struct{}
+	mediaFolder   string
 	chunksWorkers int
 }
 
@@ -893,6 +888,7 @@ func (t *downloadMediaTask) download() error {
 func getRandomChunkSize() int64 {
 	var min int64 = 1024 * 100 // 100kb
 	var max int64 = 1024 * 200 // 200kb
+	//nolint:gosec // it is ok to have weak generator
 	return rand.Int63n(max-min) + min
 }
 
