@@ -114,6 +114,8 @@ type bot struct {
 	taskC chan task
 	doneC chan struct{}
 
+	plugin plugin.Plugin
+
 	chunksWorkers int
 }
 
@@ -208,8 +210,7 @@ func (b *bot) handleMessage(message *tgbotapi.Message, user *types.User) {
 		return
 	}
 
-	var plug plugin.Plugin
-	entityType, entityID, err := plug.ParseEntity(message.Text)
+	entityType, entityID, err := b.plugin.ParseEntity(message.Text)
 	if err != nil {
 		reply(b.tg, message, "Link to the media or playlist is incorrect")
 		return
@@ -428,6 +429,7 @@ type mediaInfo struct {
 }
 
 type downloader struct {
+	plugin      plugin.Plugin
 	mediaRepo   repo.MediaRepository
 	manager     *chunkManager
 	file        *os.File
@@ -441,8 +443,7 @@ func (d *downloader) download(
 	mediaLink *types.MediaLink, user *types.User, mediaID int64, doneC chan struct{},
 ) (*mediaInfo, error) {
 
-	var plug plugin.Plugin
-	meta, err := plug.GetMeta()
+	meta, err := d.plugin.GetMeta()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get meta info from plugin: %w", err)
 	}
@@ -704,6 +705,7 @@ func (t *downloadChunkTask) do() {
 }
 
 type downloadPlaylistTask struct {
+	plugin        plugin.Plugin
 	tg            *tgbotapi.BotAPI
 	message       *tgbotapi.Message
 	user          *types.User
@@ -754,8 +756,7 @@ func (t *downloadPlaylistTask) do() {
 }
 
 func (t *downloadPlaylistTask) download() error {
-	var plug plugin.Plugin
-	playlist, err := plug.GetPlaylist()
+	playlist, err := t.plugin.GetPlaylist()
 	if err != nil {
 		return fmt.Errorf("failed to get playlist info from plugin: %w", err)
 	}
