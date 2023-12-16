@@ -11,8 +11,9 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 
-	"media-dl-tg/internal/repo"
-	"media-dl-tg/internal/types"
+	"github.com/lavrd/media-dl-tg/internal/repo"
+	"github.com/lavrd/media-dl-tg/internal/types"
+	internal_plugin "github.com/lavrd/media-dl-tg/pkg/plugin"
 )
 
 const (
@@ -94,14 +95,14 @@ func TestMediaRepository(t *testing.T) {
 
 	t.Run("test multimedia creation", func(t *testing.T) {
 		var media *types.Media
-		media, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.AudioMediaType)
+		media, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, internal_plugin.AudioMediaType)
 		r.NoError(err)
 		r.Equal(int64(1), media.ID)
 		r.NotEmpty(media.TgMessageID)
 		r.NotEmpty(media.URI)
 		r.Equal(user.ID, media.UserID)
 		r.Equal(types.PendingMediaState, media.State)
-		r.Equal(types.AudioMediaType, media.Type)
+		r.Equal(internal_plugin.AudioMediaType, media.Type)
 		r.False(media.CreatedAt.IsZero())
 		r.False(media.UpdatedAt.IsZero())
 		r.Nil(media.DoneAt)
@@ -116,7 +117,7 @@ func TestMediaRepository(t *testing.T) {
 		r.NotEmpty(internalMedia.TgMessageID)
 		r.NotEmpty(internalMedia.URI)
 		r.Equal(types.PendingMediaState, internalMedia.State)
-		r.Equal(types.AudioMediaType, internalMedia.Type)
+		r.Equal(internal_plugin.AudioMediaType, internalMedia.Type)
 		r.False(internalMedia.CreatedAt.IsZero())
 		r.False(internalMedia.UpdatedAt.IsZero())
 		r.Nil(internalMedia.DoneAt)
@@ -139,7 +140,7 @@ func TestMediaRepository(t *testing.T) {
 	})
 
 	t.Run("test that after creating new multimedia length will be increased", func(t *testing.T) {
-		_, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.VideoMediaType)
+		_, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, internal_plugin.VideoMediaType)
 		r.NoError(err)
 
 		multimedia := getMultimedia(r, db, user.ID)
@@ -189,7 +190,7 @@ func TestMediaRepository(t *testing.T) {
 
 	t.Run("test unknown user id", func(t *testing.T) {
 		var media *types.Media
-		media, err = mediaRepo.Create(ctx, 123, tgMessageID, uri, types.AudioMediaType)
+		media, err = mediaRepo.Create(ctx, 123, tgMessageID, uri, internal_plugin.AudioMediaType)
 		r.Error(err)
 		r.Contains(err.Error(), "FOREIGN KEY constraint failed")
 		r.Nil(media)
@@ -197,7 +198,7 @@ func TestMediaRepository(t *testing.T) {
 
 	t.Run("test delete media in progress", func(t *testing.T) {
 		for i := 0; i < 3; i++ {
-			_, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, types.AudioMediaType)
+			_, err = mediaRepo.Create(ctx, user.ID, tgMessageID, uri, internal_plugin.AudioMediaType)
 			r.NoError(err)
 		}
 		var multimedia []*types.Media
@@ -249,14 +250,14 @@ func getMultimedia(r *require.Assertions, db *sqlx.DB, userID int64) []*media {
 //
 //nolint:govet // disable field aligment for better reading and keep as it in .sql files
 type media struct {
-	ID          int64            `db:"id"`
-	UserID      int64            `db:"user_id"`
-	TgMessageID int              `db:"tg_message_id"`
-	URI         string           `db:"uri"`
-	Title       string           `db:"title"`
-	State       types.MediaState `db:"state"`
-	Type        types.MediaType  `db:"type"`
-	CreatedAt   time.Time        `db:"created_at"`
-	UpdatedAt   time.Time        `db:"updated_at"`
-	DoneAt      *time.Time       `db:"done_at"`
+	ID          int64                     `db:"id"`
+	UserID      int64                     `db:"user_id"`
+	TgMessageID int                       `db:"tg_message_id"`
+	URI         string                    `db:"uri"`
+	Title       string                    `db:"title"`
+	State       types.MediaState          `db:"state"`
+	Type        internal_plugin.MediaType `db:"type"`
+	CreatedAt   time.Time                 `db:"created_at"`
+	UpdatedAt   time.Time                 `db:"updated_at"`
+	DoneAt      *time.Time                `db:"done_at"`
 }

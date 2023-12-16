@@ -12,7 +12,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file" // we need this import to use file driver for migration tool
 	"github.com/jmoiron/sqlx"
 
-	"media-dl-tg/internal/types"
+	"github.com/lavrd/media-dl-tg/internal/types"
+	internal_plugin "github.com/lavrd/media-dl-tg/pkg/plugin"
 )
 
 const driver = "sqlite3"
@@ -30,7 +31,7 @@ type UsersRepository interface {
 }
 
 type MediaRepository interface {
-	Create(ctx context.Context, userID int64, tgMessageID int, uri string, typ types.MediaType) (*types.Media, error)
+	Create(ctx context.Context, userID int64, tgMessageID int, uri string, typ internal_plugin.MediaType) (*types.Media, error)
 	GetInProgress(ctx context.Context, userID int64) ([]*types.Media, error)
 	UpdateTitle(ctx context.Context, id int64, title string) error
 	UpdateState(ctx context.Context, id int64, state types.MediaState) error
@@ -54,7 +55,7 @@ func OpenDBAndMigrate(filePath string, mode Mode) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new driver: %w", err)
 	}
-	m, err := migrate.NewWithDatabaseInstance("file://../../migrations", driver, drv)
+	m, err := migrate.NewWithDatabaseInstance("file://./migrations", driver, drv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new migration manager: %w", err)
 	}
@@ -103,7 +104,7 @@ type usersRepository struct {
 
 func (r *usersRepository) Create(ctx context.Context, tgUserID int64) (*types.User, error) {
 	user := &user{}
-	if err := r.db.GetContext(ctx, user, "insert into users (tg_user_id) VALUES ($1) returning *", tgUserID); err != nil {
+	if err := r.db.GetContext(ctx, user, "insert into users (tg_user_id) values ($1) returning *", tgUserID); err != nil {
 		return nil, fmt.Errorf("failed to get: %w", err)
 	}
 	return user.ToTypes(), nil
@@ -124,12 +125,12 @@ type media struct {
 	// Telegram message id in telegram to understand to what message we need to reply.
 	TgMessageID int `db:"tg_message_id"`
 	// URI to download video.
-	URI       string           `db:"uri"`
-	Title     string           `db:"title"`
-	State     types.MediaState `db:"state"`
-	Type      types.MediaType  `db:"type"`
-	CreatedAt time.Time        `db:"created_at"`
-	UpdatedAt time.Time        `db:"updated_at"`
+	URI       string                    `db:"uri"`
+	Title     string                    `db:"title"`
+	State     types.MediaState          `db:"state"`
+	Type      internal_plugin.MediaType `db:"type"`
+	CreatedAt time.Time                 `db:"created_at"`
+	UpdatedAt time.Time                 `db:"updated_at"`
 	// When media was successfully downloaded.
 	DoneAt *time.Time `db:"done_at"`
 }
@@ -155,12 +156,12 @@ type mediaRepository struct {
 
 func (r *mediaRepository) Create(
 	ctx context.Context,
-	userID int64, tgMessageID int, uri string, typ types.MediaType,
+	userID int64, tgMessageID int, uri string, typ internal_plugin.MediaType,
 ) (*types.Media, error) {
 
 	media := &media{}
 	if err := r.db.GetContext(ctx, media, `
-		insert into media (user_id, tg_message_id, uri, type) VALUES ($1, $2, $3, $4) returning *
+		insert into media (user_id, tg_message_id, uri, type) values ($1, $2, $3, $4) returning *
 	`,
 		userID, tgMessageID, uri, typ,
 	); err != nil {

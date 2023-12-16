@@ -1,16 +1,23 @@
+lint:
+	@go fmt ./...
+	@golangci-lint run ./...
+
 test:
 	@go test -count=1 -v -coverprofile=cover.out ./internal/...
-
-lint: 
-	@golangci-lint run ./...
 
 coverage:
 	@go tool cover -html=cover.out
 
-docker_build:
-	@docker build -t media-dl-tg -f Dockerfile .
+run:
+	@TG_BOT_TOKEN=$(token) VERBOSE=1 go run ./cmd/media-dl-tg
 
-docker_run:
-	@docker run -d --rm \
-		-e TG_BOT_ENDPOINT=http://tg-bot-api-server:8081/bot%s/%s -e TG_BOT_TOKEN= -e VERBOSE=1 \
-		media-dl-tg 
+build_plugin:
+	@mkdir -p plugin
+	@cp ../$(plugin)/main.go ./plugin/main.go
+	@go mod tidy
+	@go build -buildmode=plugin ./plugin
+	@rm -rf plugin
+	@go mod tidy
+
+build_docker:
+	@docker build -t media-dl-tg -f Dockerfile .

@@ -1,5 +1,5 @@
 run:
-  timeout: 1m
+  timeout: 10m
   allow-parallel-runners: true
   tests: true
 
@@ -15,12 +15,15 @@ linters-settings:
       - experimental
     disabled-checks:
       - whyNoLint
+      - hugeParam
+      - unnecessaryBlock
   govet:
     enable-all: true
+    disable:
+      - fieldalignment
+      - composites
   lll:
     line-length: 120
-  unused:
-    check-exported: false
   whitespace:
     multi-if: true
     multi-func: true
@@ -31,6 +34,21 @@ linters-settings:
     min-occurrences: 2
   misspell:
     locale: US
+  revive:
+    rules:
+      - name: var-naming
+        disabled: true
+  stylecheck:
+    checks: [ "all", "-ST1003" ]
+
+issues:
+  exclude:
+    - "G101"
+    - "G404"
+  exclude-rules:
+    - path: (.+)_test.go
+      linters:
+        - goerr113
 
 linters:
   enable:
@@ -60,15 +78,9 @@ linters:
     - gocritic
     - nakedret
     - gosimple
-    - asasalint
-    - asciicheck
-    - errchkjson
-    - goerr113
     - prealloc
-    - errorlint
-    - makezero
-    - durationcheck
     - revive
+    - goerr113
     - unparam
   disable-all: true
   fast: false

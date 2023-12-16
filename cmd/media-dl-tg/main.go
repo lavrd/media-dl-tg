@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -25,10 +24,10 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 
-	"media-dl-tg/internal/config"
-	"media-dl-tg/internal/plugin"
-	"media-dl-tg/internal/repo"
-	"media-dl-tg/internal/types"
+	"github.com/lavrd/media-dl-tg/internal/config"
+	"github.com/lavrd/media-dl-tg/internal/repo"
+	"github.com/lavrd/media-dl-tg/internal/types"
+	internal_plugin "github.com/lavrd/media-dl-tg/pkg/plugin"
 )
 
 const (
@@ -57,6 +56,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	plug, err := internal_plugin.Open("./plugin.so")
+	if err != nil {
+		panic(err)
+	}
+
+	taskC := make(chan task)
+	runWorkers(taskC, cfg.MediaNPlaylistWorkers)
+	mediaLink := &types.MediaLink{URI: "", Type: internal_plugin.VideoMediaType}
+	doneC := make(chan struct{})
+	// taskC <- newDownloadMediaTask(plug, nil, nil, nil, nil, mediaLink, nil, 10, doneC)
+	taskC <- newDownloadPlaylistTask(plug, nil, nil, nil, 0, mediaLink, nil, taskC, 10, doneC)
+	<-doneC
+	return
+
 	if cfg.Verbose {
 		log.Logger = log.Level(zerolog.TraceLevel)
 	}
@@ -79,7 +92,7 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to delete media in progress")
 	}
 
-	doneC := make(chan struct{})
+	// doneC := make(chan struct{})
 	startJob(&cleanJob{}, time.Hour, doneC)
 	bot, err := newBot(cfg, usersRepo, mediaRepo, doneC)
 	if err != nil {
@@ -114,7 +127,7 @@ type bot struct {
 	taskC chan task
 	doneC chan struct{}
 
-	plugin plugin.Plugin
+	plugin internal_plugin.Plugin
 
 	chunksWorkers int
 }
@@ -140,11 +153,16 @@ func newBot(
 	runWorkers(taskC, cfg.MediaNPlaylistWorkers)
 
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	u.Timeout = 1 // todo: revert
 	updatesC := tg.GetUpdatesChan(u)
 	// Wait for updates and clear them if you don't want to handle a large backlog of old messages.
 	time.Sleep(time.Second)
 	updatesC.Clear()
+
+	plug, err := internal_plugin.Open("./plugin.so")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open plugin: %w", err)
+	}
 
 	bot := &bot{
 		tg:       tg,
@@ -152,6 +170,8 @@ func newBot(
 
 		usersRepo: usersRepo,
 		mediaRepo: mediaRepo,
+
+		plugin: plug, // todo: put to right order
 
 		taskC: taskC,
 		doneC: doneC,
@@ -216,8 +236,8 @@ func (b *bot) handleMessage(message *tgbotapi.Message, user *types.User) {
 		return
 	}
 	switch entityType {
-	case types.EntityMedia:
-	case types.EntityPlaylist:
+	case internal_plugin.EntityMedia:
+	case internal_plugin.EntityPlaylist:
 		if user.PlaylistMaxSize == 0 {
 			reply(b.tg, message, "You are not allowed to download playlists")
 			return
@@ -235,10 +255,10 @@ func (b *bot) handleMessage(message *tgbotapi.Message, user *types.User) {
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("Video",
 				prepCbData(
-					topicChooseMediaType, prepareCMTCbValue(entityType, types.VideoMediaType, entityID))),
+					topicChooseMediaType, prepareCMTCbValue(entityType, internal_plugin.VideoMediaType, entityID))),
 			tgbotapi.NewInlineKeyboardButtonData("Audio",
 				prepCbData(
-					topicChooseMediaType, prepareCMTCbValue(entityType, types.AudioMediaType, entityID))),
+					topicChooseMediaType, prepareCMTCbValue(entityType, internal_plugin.AudioMediaType, entityID))),
 		),
 	)
 	if _, err := b.tg.Send(msg); err != nil {
@@ -336,11 +356,11 @@ func (b *bot) handleChooseMediaTypeCallback(
 
 	var downloadTask task
 	switch entityType {
-	case types.EntityPlaylist:
-		downloadTask = newDownloadPlaylistTask(
+	case internal_plugin.EntityPlaylist:
+		downloadTask = newDownloadPlaylistTask(b.plugin,
 			b.tg, message, user, media.ID, mediaLink, b.mediaRepo, b.taskC, b.chunksWorkers, doneC)
-	case types.EntityMedia:
-		downloadTask = newDownloadMediaTask(b.tg, message, user, media, mediaLink, b.mediaRepo, b.chunksWorkers, doneC)
+	case internal_plugin.EntityMedia:
+		downloadTask = newDownloadMediaTask(b.plugin, b.tg, message, user, media, mediaLink, b.mediaRepo, b.chunksWorkers, doneC)
 	default:
 		log.Error().Str("value", value).Msg("unknown entity type for cmt callback")
 		return
@@ -429,11 +449,11 @@ type mediaInfo struct {
 }
 
 type downloader struct {
-	plugin      plugin.Plugin
-	mediaRepo   repo.MediaRepository
+	plugin internal_plugin.Plugin
+	// mediaRepo   repo.MediaRepository
 	manager     *chunkManager
 	file        *os.File
-	meta        *plugin.Meta
+	meta        *internal_plugin.Meta // todo: can we put it through download function instead of init it while download
 	mediaFolder string
 	// Number of workers to download chunks in parallel.
 	chunksWorkers int
@@ -443,7 +463,7 @@ func (d *downloader) download(
 	mediaLink *types.MediaLink, user *types.User, mediaID int64, doneC chan struct{},
 ) (*mediaInfo, error) {
 
-	meta, err := d.plugin.GetMeta()
+	meta, err := d.plugin.GetMeta(context.Background(), mediaLink.URI, mediaLink.Type)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get meta info from plugin: %w", err)
 	}
@@ -453,29 +473,32 @@ func (d *downloader) download(
 		return nil, fmt.Errorf("we don't support to download streams or media is empty: %w", types.ErrInternal)
 	}
 
-	if err = d.mediaRepo.UpdateTitle(context.TODO(), mediaID, meta.Title); err != nil {
-		log.Error().Err(err).
-			Int64("media_id", mediaID).Str("title", meta.Title).
-			Msg("failed to update media title")
-	}
+	// if err = d.mediaRepo.UpdateTitle(context.TODO(), mediaID, meta.Title); err != nil {
+	// 	log.Error().Err(err).
+	// 		Int64("media_id", mediaID).Str("title", meta.Title).
+	// 		Msg("failed to update media title")
+	// }
 
 	switch mediaLink.Type {
-	case types.AudioMediaType:
-		if meta.Size > user.AudioMaxSize {
-			return nil, fmt.Errorf("audio size exceeded: %d: %w", meta.Size, types.ErrSizeExceeded)
-		}
-	case types.VideoMediaType:
-		if meta.Size > user.VideoMaxSize {
-			return nil, fmt.Errorf("video size exceeded: %d: %w", meta.Size, types.ErrSizeExceeded)
-		}
+	case internal_plugin.AudioMediaType:
+		// if meta.Size > user.AudioMaxSize {
+		// 	return nil, fmt.Errorf("audio size exceeded: %d: %w", meta.Size, types.ErrSizeExceeded)
+		// }
+	case internal_plugin.VideoMediaType:
+		// if meta.Size > user.VideoMaxSize {
+		// 	return nil, fmt.Errorf("video size exceeded: %d: %w", meta.Size, types.ErrSizeExceeded)
+		// }
 	default:
 		return nil, fmt.Errorf("unknown media type: %s: %w", mediaLink.Type, types.ErrInternal)
 	}
+
+	d.mediaFolder = "./media"
 
 	//nolint:gosec // it is ok to have weak generator
 	id := rand.Uint64()
 	path := strings.NewReplacer(" ", "_", "/", "_").Replace(meta.Title)
 	path = fmt.Sprintf("%s-%d.mp4", path, id)
+	// return nil, fmt.Errorf(d.mediaFolder, "loh")
 	file, err := os.Create(fmt.Sprintf("%s/%s", d.mediaFolder, path))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file: %w", err)
@@ -705,12 +728,12 @@ func (t *downloadChunkTask) do() {
 }
 
 type downloadPlaylistTask struct {
-	plugin        plugin.Plugin
-	tg            *tgbotapi.BotAPI
-	message       *tgbotapi.Message
-	user          *types.User
-	mediaLink     *types.MediaLink
-	mediaRepo     repo.MediaRepository
+	plugin internal_plugin.Plugin
+	// tg            *tgbotapi.BotAPI
+	// message       *tgbotapi.Message
+	// user          *types.User
+	mediaLink *types.MediaLink
+	// mediaRepo     repo.MediaRepository
 	taskC         chan task
 	doneC         chan struct{}
 	chunksWorkers int
@@ -718,18 +741,20 @@ type downloadPlaylistTask struct {
 }
 
 func newDownloadPlaylistTask(
+	plug internal_plugin.Plugin,
 	tg *tgbotapi.BotAPI, message *tgbotapi.Message, user *types.User,
 	mediaID int64, link *types.MediaLink, mediaRepo repo.MediaRepository,
 	taskC chan task, chunksWorkers int, doneC chan struct{},
 ) *downloadPlaylistTask {
 
 	return &downloadPlaylistTask{
-		tg:            tg,
-		message:       message,
-		user:          user,
-		mediaID:       mediaID,
-		mediaLink:     link,
-		mediaRepo:     mediaRepo,
+		plugin: plug,
+		// tg:            tg,
+		// message:       message,
+		// user:          user,
+		mediaID:   mediaID,
+		mediaLink: link,
+		// mediaRepo:     mediaRepo,
 		taskC:         taskC,
 		chunksWorkers: chunksWorkers,
 		doneC:         doneC,
@@ -737,54 +762,56 @@ func newDownloadPlaylistTask(
 }
 
 func (t *downloadPlaylistTask) do() {
-	if t.user.PlaylistMaxSize == 0 {
-		reply(t.tg, t.message, "You are not allowed to download playlists")
-		return
-	}
+	// if t.user.PlaylistMaxSize == 0 {
+	// 	reply(t.tg, t.message, "You are not allowed to download playlists")
+	// 	return
+	// }
 	err := t.download()
 	switch {
 	case err == nil:
 	case errors.Is(err, types.ErrSizeExceeded):
-		reply(t.tg, t.message, "Your playlist contains medias more than you are allowed to download")
+		// reply(t.tg, t.message, "Your playlist contains medias more than you are allowed to download")
 	default:
-		log.Error().Err(err).
-			Str("playlist_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
-			Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
-			Msg("failed to download playlist")
-		reply500(t.tg, t.message)
+		// log.Error().Err(err).
+		// 	Str("playlist_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
+		// Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
+		// Msg("failed to download playlist")
+		// reply500(t.tg, t.message)
 	}
 }
 
 func (t *downloadPlaylistTask) download() error {
-	playlist, err := t.plugin.GetPlaylist()
+	playlist, err := t.plugin.GetPlaylist(context.Background(), t.mediaLink.URI)
 	if err != nil {
 		return fmt.Errorf("failed to get playlist info from plugin: %w", err)
 	}
 
-	if t.user.PlaylistMaxSize < playlist.Size() {
-		return fmt.Errorf("sent playlist size is more than allowed: %w", types.ErrSizeExceeded)
+	// if t.user.PlaylistMaxSize < playlist.Size() {
+	// 	return fmt.Errorf("sent playlist size is more than allowed: %w", types.ErrSizeExceeded)
+	// }
+	for _, entry := range playlist.URLs {
+		// media, err := t.mediaRepo.Create(context.TODO(), t.user.ID, t.message.MessageID, t.mediaLink.URI, t.mediaLink.Type)
+		// if err != nil {
+		// 	log.Error().Err(err).Int64("user_id", t.user.ID).Msg("failed to create new media from playlist")
+		// 	continue
+		// }
+		mediaLink := &types.MediaLink{URI: entry, Type: t.mediaLink.Type}
+		// t.taskC <- newDownloadMediaTask(t.plugin, t.tg, t.message, t.user, media, mediaLink, t.mediaRepo, t.chunksWorkers, t.doneC)
+		t.taskC <- newDownloadMediaTask(t.plugin, nil, nil, nil, nil, mediaLink, nil, t.chunksWorkers, t.doneC)
 	}
-	for _, entry := range playlist.Media {
-		media, err := t.mediaRepo.Create(context.TODO(), t.user.ID, t.message.MessageID, t.mediaLink.URI, t.mediaLink.Type)
-		if err != nil {
-			log.Error().Err(err).Int64("user_id", t.user.ID).Msg("failed to create new media from playlist")
-			continue
-		}
-		mediaLink := &types.MediaLink{URI: entry.URL, Type: t.mediaLink.Type}
-		t.taskC <- newDownloadMediaTask(t.tg, t.message, t.user, media, mediaLink, t.mediaRepo, t.chunksWorkers, t.doneC)
-	}
-	if err := t.mediaRepo.UpdateState(context.TODO(), t.mediaID, types.DoneMediaState); err != nil {
-		log.Error().Err(err).Int64("media_id", t.mediaID).Msg("failed to set playlist as done")
-	}
+	// if err := t.mediaRepo.UpdateState(context.TODO(), t.mediaID, types.DoneMediaState); err != nil {
+	// 	log.Error().Err(err).Int64("media_id", t.mediaID).Msg("failed to set playlist as done")
+	// }
 	return nil
 }
 
 type downloadMediaTask struct {
-	mediaRepo     repo.MediaRepository
-	tg            *tgbotapi.BotAPI
-	message       *tgbotapi.Message
-	user          *types.User
-	media         *types.Media
+	plugin internal_plugin.Plugin
+	// mediaRepo repo.MediaRepository
+	// tg            *tgbotapi.BotAPI
+	// message       *tgbotapi.Message
+	// user          *types.User
+	// media         *types.Media
 	mediaLink     *types.MediaLink
 	doneC         chan struct{}
 	mediaFolder   string
@@ -792,18 +819,20 @@ type downloadMediaTask struct {
 }
 
 func newDownloadMediaTask(
+	plug internal_plugin.Plugin,
 	tg *tgbotapi.BotAPI, message *tgbotapi.Message, user *types.User,
 	media *types.Media, mediaLink *types.MediaLink, mediaRepo repo.MediaRepository,
 	chunksWorker int, doneC chan struct{},
 ) *downloadMediaTask {
 
 	return &downloadMediaTask{
-		tg:            tg,
-		message:       message,
-		user:          user,
-		media:         media,
-		mediaLink:     mediaLink,
-		mediaRepo:     mediaRepo,
+		plugin: plug,
+		// tg:            tg,
+		// message:       message,
+		// user:          user,
+		// media:         media,
+		mediaLink: mediaLink,
+		// mediaRepo:     mediaRepo,
 		doneC:         doneC,
 		chunksWorkers: chunksWorker,
 	}
@@ -814,32 +843,33 @@ func (t *downloadMediaTask) do() {
 	switch {
 	case err == nil:
 	case errors.Is(err, types.ErrSizeExceeded):
-		reply(t.tg, t.message, "Media size is more than you allowed to download")
-		if err = t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.DoneMediaState); err != nil {
-			log.Error().Err(err).Int64("media_id", t.media.ID).Msg("failed to update state")
-		}
+		// reply(t.tg, t.message, "Media size is more than you allowed to download")
+		// if err = t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.DoneMediaState); err != nil {
+		// 	log.Error().Err(err).Int64("media_id", t.media.ID).Msg("failed to update state")
+		// }
 	default:
 		log.Error().Err(err).
-			Int64("media_id", t.media.ID).Str("media_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
-			Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
+			// Int64("media_id", t.media.ID).Str("media_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
+			// Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
 			Msg("failed to download media")
-		if err := t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.ErrorMediaState); err != nil {
-			log.Error().Err(err).Int64("media_id", t.media.ID).Msg("failed to update media state to error")
-		}
-		reply500(t.tg, t.message)
+		// if err := t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.ErrorMediaState); err != nil {
+		// 	log.Error().Err(err).Int64("media_id", t.media.ID).Msg("failed to update media state to error")
+		// }
+		// reply500(t.tg, t.message)
 	}
 }
 
 func (t *downloadMediaTask) download() error {
 	logger := log.With().
-		Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
-		Int64("media_id", t.media.ID).Str("media_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
+		// Int64("chat_id", t.message.Chat.ID).Int("message_id", t.message.MessageID).
+		// Int64("media_id", t.media.ID).Str("media_link", t.mediaLink.URI).Str("media_type", string(t.mediaLink.Type)).
 		Logger()
 
 	mediaInfo, err := (&downloader{
-		mediaRepo:     t.mediaRepo,
+		plugin: t.plugin,
+		// mediaRepo:     t.mediaRepo,
 		chunksWorkers: t.chunksWorkers,
-	}).download(t.mediaLink, t.user, t.media.ID, t.doneC)
+	}).download(t.mediaLink, nil, 0, t.doneC)
 	if err != nil {
 		return fmt.Errorf("failed to download media: %w", err)
 	}
@@ -854,36 +884,36 @@ func (t *downloadMediaTask) download() error {
 			Msg("be aware that media size is more than 50mb, and you need to use custom (local) telegram bot api server")
 	}
 
-	fileData := tgbotapi.FilePath(fmt.Sprintf("%s/%s", t.mediaFolder, mediaInfo.filepath))
-	duration := int(math.Floor(mediaInfo.duration.Seconds()))
+	// fileData := tgbotapi.FilePath(fmt.Sprintf("%s/%s", t.mediaFolder, mediaInfo.filepath))
+	// duration := int(math.Floor(mediaInfo.duration.Seconds()))
 
-	var chattable tgbotapi.Chattable
-	switch t.mediaLink.Type {
-	case types.AudioMediaType:
-		video := tgbotapi.NewVideo(t.message.Chat.ID, fileData)
-		video.ReplyToMessageID = t.message.MessageID
-		video.Caption = fmt.Sprintf("%s - %s", mediaInfo.title, mediaInfo.quality)
-		video.Duration = duration
-		chattable = video
-	case types.VideoMediaType:
-		audio := tgbotapi.NewAudio(t.message.Chat.ID, fileData)
-		audio.ReplyToMessageID = t.message.MessageID
-		audio.Caption = mediaInfo.title
-		audio.Duration = duration
-		chattable = audio
-	default:
-		return fmt.Errorf("unknown media type to do message reply: %s: %w", t.mediaLink.Type, types.ErrInternal)
-	}
+	// var chattable tgbotapi.Chattable
+	// switch t.mediaLink.Type {
+	// case types.AudioMediaType:
+	// 	video := tgbotapi.NewVideo(t.message.Chat.ID, fileData)
+	// 	video.ReplyToMessageID = t.message.MessageID
+	// 	video.Caption = fmt.Sprintf("%s - %s", mediaInfo.title, mediaInfo.quality)
+	// 	video.Duration = duration
+	// 	chattable = video
+	// case types.VideoMediaType:
+	// 	audio := tgbotapi.NewAudio(t.message.Chat.ID, fileData)
+	// 	audio.ReplyToMessageID = t.message.MessageID
+	// 	audio.Caption = mediaInfo.title
+	// 	audio.Duration = duration
+	// 	chattable = audio
+	// default:
+	// 	return fmt.Errorf("unknown media type to do message reply: %s: %w", t.mediaLink.Type, types.ErrInternal)
+	// }
 
 	logger.Info().Msg("reply media to chat")
-	if _, err := t.tg.Send(chattable); err != nil {
-		return fmt.Errorf("failed to send media message: %w", err)
-	}
+	// if _, err := t.tg.Send(chattable); err != nil {
+	// 	return fmt.Errorf("failed to send media message: %w", err)
+	// }
 	logger.Info().Msg("media sent to chat successfully")
 
-	if err := t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.DoneMediaState); err != nil {
-		logger.Error().Err(err).Msg("failed to update media state to done")
-	}
+	// if err := t.mediaRepo.UpdateState(context.TODO(), t.media.ID, types.DoneMediaState); err != nil {
+	// 	logger.Error().Err(err).Msg("failed to update media state to done")
+	// }
 
 	return nil
 }
@@ -965,16 +995,16 @@ func parseCbData(data string) (topic, value string) {
 	return
 }
 
-func prepareCMTCbValue(entity types.Entity, mediaType types.MediaType, uri string) string {
+func prepareCMTCbValue(entity internal_plugin.Entity, mediaType internal_plugin.MediaType, uri string) string {
 	return fmt.Sprintf("%s%s%s%s%s", entity, cbCMTValDelimiter, mediaType, cbCMTValDelimiter, uri)
 }
 
-func parseCMTCbValue(value string) (types.Entity, types.MediaType, string) {
+func parseCMTCbValue(value string) (internal_plugin.Entity, internal_plugin.MediaType, string) {
 	parts := strings.SplitN(value, cbCMTValDelimiter, 3)
 	if len(parts) != 3 {
 		return "", "", ""
 	}
-	return types.Entity(parts[0]), types.MediaType(parts[1]), parts[2]
+	return internal_plugin.Entity(parts[0]), internal_plugin.MediaType(parts[1]), parts[2]
 }
 
 func reply(tg *tgbotapi.BotAPI, message *tgbotapi.Message, text string) {

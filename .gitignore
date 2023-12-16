@@ -1,5 +1,8 @@
+.idea
 .DS_Store
 .env
-/media
+media
 media_dl_tg.db
 cover.out
+plugin.so
+plugin

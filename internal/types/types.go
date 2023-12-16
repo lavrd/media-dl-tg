@@ -3,6 +3,8 @@ package types
 import (
 	"errors"
 	"time"
+
+	internal_plugin "github.com/lavrd/media-dl-tg/pkg/plugin"
 )
 
 var (
@@ -18,23 +20,9 @@ const (
 	DoneMediaState    MediaState = "done"
 )
 
-type MediaType string
-
-const (
-	AudioMediaType MediaType = "audio"
-	VideoMediaType MediaType = "video"
-)
-
-type Entity string
-
-const (
-	EntityMedia    Entity = "media"
-	EntityPlaylist Entity = "playlist"
-)
-
 type MediaLink struct {
 	URI  string
-	Type MediaType
+	Type internal_plugin.MediaType
 }
 
 type User struct {
@@ -54,7 +42,7 @@ type Media struct {
 	URI         string
 	Title       string
 	State       MediaState
-	Type        MediaType
+	Type        internal_plugin.MediaType
 	TgMessageID int
 	ID          int64
 	UserID      int64

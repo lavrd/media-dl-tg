@@ -5,7 +5,7 @@ import (
 	"os"
 	"strconv"
 
-	"media-dl-tg/internal/types"
+	"github.com/lavrd/media-dl-tg/internal/types"
 )
 
 //nolint:govet // disable field aligment for better reading
