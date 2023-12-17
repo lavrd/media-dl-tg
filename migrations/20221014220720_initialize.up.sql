@@ -8,9 +8,9 @@ create table users
     video_max_size    integer                           not null default 0,
     -- Maximum allowable videos length to download from playlist.
     playlist_max_size integer                           not null default 0,
-    created_at        datetime                          not null default current_timestamp,
     -- Last message from the user in the bot.
-    last_event_at     datetime                          not null default current_timestamp
+    last_event_at     datetime                          not null default current_timestamp,
+    created_at        datetime                          not null default current_timestamp
 );
 
 create table media
@@ -25,8 +25,8 @@ create table media
     title         text                                                 not null default '',
     state         text check ( state in ('pending', 'error', 'done') ) not null default 'pending',
     type          text check ( type in ('audio', 'video') )            not null,
-    created_at    datetime                                             not null default CURRENT_TIMESTAMP,
-    updated_at    datetime                                             not null default CURRENT_TIMESTAMP,
     -- When media was successfully downloaded.
-    done_at       datetime                                                      default null
+    done_at       datetime                                                      default null,
+    updated_at    datetime                                             not null default current_timestamp,
+    created_at    datetime                                             not null default current_timestamp
 );

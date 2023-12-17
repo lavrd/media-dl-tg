@@ -5,7 +5,7 @@ services:
     env_file:
       - .env
     environment:
-      DATABASE_FILEPATH: /run/database/media_dl_tg.db
+      DATABASE_FILE: /run/database/media_dl_tg.db
     volumes:
       - ./files:/run/database
   tg-bot-api-server:

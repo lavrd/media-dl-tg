@@ -26,24 +26,24 @@ type MediaLink struct {
 }
 
 type User struct {
-	CreatedAt       time.Time
-	LastEventAt     time.Time
 	ID              int64
 	TgUserID        int64
 	AudioMaxSize    int64
 	VideoMaxSize    int64
 	PlaylistMaxSize int64
+	LastEventAt     time.Time
+	CreatedAt       time.Time
 }
 
 type Media struct {
-	DoneAt      *time.Time
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID          int64
+	UserID      int64
+	TgMessageID int
 	URI         string
 	Title       string
 	State       MediaState
 	Type        internal_plugin.MediaType
-	TgMessageID int
-	ID          int64
-	UserID      int64
+	DoneAt      *time.Time
+	UpdatedAt   time.Time
+	CreatedAt   time.Time
 }

@@ -14,10 +14,10 @@ run:
 build_plugin:
 	@mkdir -p plugin
 	@cp ../$(plugin)/main.go ./plugin/main.go
-	@go mod tidy
+	@go mod tidy # to install plugin dependencies
 	@go build -buildmode=plugin ./plugin
-	@rm -rf plugin
-	@go mod tidy
+	@rm -rf plugin/*
+	@go mod tidy # to remove plugin dependencies
 
 build_docker:
 	@docker build -t media-dl-tg -f Dockerfile .

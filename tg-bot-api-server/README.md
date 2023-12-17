@@ -1,22 +1,22 @@
 # tg-bot-api-server
 
+https://tdlib.github.io/telegram-bot-api/build.html?os=Linux
 
 ## Build
 
 ```shell
-docker build -t tg-bot-api-server -f Dockerfile .
+make build
 ```
-
 
 ## Run
 
 ```shell
-docker run -d --rm -p 8081:8081 -e TELEGRAM_API_ID= -e TELEGRAM_API_HASH= tg-bot-api-server
+make run api_id= api_hash=
 ```
 
 or
 
 ```shell
-docker run --rm -it -p 8081:8081 tg-bot-api-server /bin/bash
+docker run --rm -it -p 8081:8081 tg-bot-api-server /bin/sh
 TELEGRAM_API_ID= TELEGRAM_API_HASH= telegram-bot-api/bin/telegram-bot-api --local
 ```

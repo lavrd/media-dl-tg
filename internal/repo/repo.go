@@ -9,7 +9,8 @@ import (
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/sqlite3"
-	_ "github.com/golang-migrate/migrate/v4/source/file" // we need this import to use file driver for migration tool
+	// We need this import to use file driver for migration tool.
+	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jmoiron/sqlx"
 
 	"github.com/lavrd/media-dl-tg/internal/types"
@@ -38,7 +39,7 @@ type MediaRepository interface {
 	DeleteInProgress(ctx context.Context) error
 }
 
-func OpenDBAndMigrate(filePath string, mode Mode) (*sqlx.DB, error) {
+func OpenDBAndMigrate(filePath, migrationsPath string, mode Mode) (*sqlx.DB, error) {
 	dsn := fmt.Sprintf(
 		"file:%s?cache=shared&mode=%s&_foreign_keys=1",
 		filePath, mode,
@@ -55,11 +56,11 @@ func OpenDBAndMigrate(filePath string, mode Mode) (*sqlx.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new driver: %w", err)
 	}
-	m, err := migrate.NewWithDatabaseInstance("file://./migrations", driver, drv)
+	m, err := migrate.NewWithDatabaseInstance(migrationsPath, driver, drv)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new migration manager: %w", err)
 	}
-	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+	if err = m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return nil, fmt.Errorf("failed to do database structure migration: %w", err)
 	}
 	return sqlx.NewDb(db, driver), nil
@@ -71,7 +72,6 @@ func New(db *sqlx.DB) (UsersRepository, MediaRepository) {
 	return usersRepo, mediaReo
 }
 
-//nolint:govet // disable field aligment for better reading and keep as it in .sql files
 type user struct {
 	ID       int64 `db:"id"`
 	TgUserID int64 `db:"tg_user_id"`
@@ -80,10 +80,10 @@ type user struct {
 	// Maximum allowable size for downloading video for a user.
 	VideoMaxSize int64 `db:"video_max_size"`
 	// Maximum allowable videos length to download from playlist.
-	PlaylistMaxSize int64     `db:"playlist_max_size"`
-	CreatedAt       time.Time `db:"created_at"`
+	PlaylistMaxSize int64 `db:"playlist_max_size"`
 	// Last message from the user in the bot.
 	LastEventAt time.Time `db:"last_event_at"`
+	CreatedAt   time.Time `db:"created_at"`
 }
 
 func (u *user) ToTypes() *types.User {
@@ -93,8 +93,8 @@ func (u *user) ToTypes() *types.User {
 		AudioMaxSize:    u.AudioMaxSize,
 		VideoMaxSize:    u.VideoMaxSize,
 		PlaylistMaxSize: u.PlaylistMaxSize,
-		CreatedAt:       u.CreatedAt,
 		LastEventAt:     u.LastEventAt,
+		CreatedAt:       u.CreatedAt,
 	}
 }
 
@@ -118,21 +118,20 @@ func (r *usersRepository) Get(ctx context.Context, tgUserID int64) (*types.User,
 	return user.ToTypes(), nil
 }
 
-//nolint:govet // disable field aligment for better reading and keep as it in .sql files
 type media struct {
 	ID     int64 `db:"id"`
 	UserID int64 `db:"user_id"`
 	// Telegram message id in telegram to understand to what message we need to reply.
 	TgMessageID int `db:"tg_message_id"`
 	// URI to download video.
-	URI       string                    `db:"uri"`
-	Title     string                    `db:"title"`
-	State     types.MediaState          `db:"state"`
-	Type      internal_plugin.MediaType `db:"type"`
-	CreatedAt time.Time                 `db:"created_at"`
-	UpdatedAt time.Time                 `db:"updated_at"`
+	URI   string                    `db:"uri"`
+	Title string                    `db:"title"`
+	State types.MediaState          `db:"state"`
+	Type  internal_plugin.MediaType `db:"type"`
 	// When media was successfully downloaded.
-	DoneAt *time.Time `db:"done_at"`
+	DoneAt    *time.Time `db:"done_at"`
+	UpdatedAt time.Time  `db:"updated_at"`
+	CreatedAt time.Time  `db:"created_at"`
 }
 
 func (m *media) ToTypes() *types.Media {
@@ -144,9 +143,9 @@ func (m *media) ToTypes() *types.Media {
 		Title:       m.Title,
 		State:       m.State,
 		Type:        m.Type,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
 		DoneAt:      m.DoneAt,
+		UpdatedAt:   m.UpdatedAt,
+		CreatedAt:   m.CreatedAt,
 	}
 }
 

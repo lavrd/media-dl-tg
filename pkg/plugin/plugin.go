@@ -55,10 +55,10 @@ func Open(path string) (Plugin, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to find init function: %w", err)
 	}
-	newF, _ := rawNewF.(func() (Plugin, error))
-	// if !ok {
-	// 	return nil, fmt.Errorf("init function is not properly configured: %w", ErrBadSignature)
-	// }
+	newF, ok := rawNewF.(func() (Plugin, error))
+	if !ok {
+		return nil, fmt.Errorf("init function is not properly configured: %w", ErrBadSignature)
+	}
 	plug, err := newF()
 	if err != nil {
 		return nil, fmt.Errorf("failed to init plugin: %w", err)

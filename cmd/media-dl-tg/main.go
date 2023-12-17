@@ -31,17 +31,16 @@ import (
 )
 
 const (
-	maxTgAPIFileSize = 50 * 1024 * 1024 // 50mb
+	MaxTgAPIFileSize = 50 * 1024 * 1024 // 50mb
 
-	topicChooseMediaType = "cmt"
-
-	cbDelimiter       = "@"
-	cbCMTValDelimiter = ":"
+	TopicChooseMediaType   = "cmt"
+	CallbackDelimiter      = "@"
+	CallbackValueDelimiter = ":"
 )
 
 const (
-	minChunkSize int64 = 1024 * 100 // 100kb
-	maxChunkSize int64 = 1024 * 200 // 200kb
+	MinChunkSize int64 = 1024 * 100 // 100kb
+	MaxChunkSize int64 = 1024 * 200 // 200kb
 )
 
 func main() {
@@ -49,27 +48,10 @@ func main() {
 		Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).
 		With().Caller().Logger().
 		Level(zerolog.InfoLevel)
-
 	cfg, err := config.Read()
 	if err != nil {
-		fmt.Println("failed to read config:", err)
-		os.Exit(1)
+		log.Fatal().Err(err).Msg("failed to read config file")
 	}
-
-	plug, err := internal_plugin.Open("./plugin.so")
-	if err != nil {
-		panic(err)
-	}
-
-	taskC := make(chan task)
-	runWorkers(taskC, cfg.MediaNPlaylistWorkers)
-	mediaLink := &types.MediaLink{URI: "", Type: internal_plugin.VideoMediaType}
-	doneC := make(chan struct{})
-	// taskC <- newDownloadMediaTask(plug, nil, nil, nil, nil, mediaLink, nil, 10, doneC)
-	taskC <- newDownloadPlaylistTask(plug, nil, nil, nil, 0, mediaLink, nil, taskC, 10, doneC)
-	<-doneC
-	return
-
 	if cfg.Verbose {
 		log.Logger = log.Level(zerolog.TraceLevel)
 	}
@@ -82,19 +64,26 @@ func main() {
 		log.Fatal().Err(err).Msg("failed to create folder")
 	}
 
-	db, err := repo.OpenDBAndMigrate(cfg.DatabaseFilepath, repo.ModeRWC)
+	db, err := repo.OpenDBAndMigrate(cfg.DatabaseFile, cfg.MigrationsPath, repo.ModeRWC)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to open database and do migrations")
 	}
 	usersRepo, mediaRepo := repo.New(db)
-	err = mediaRepo.DeleteInProgress(context.TODO())
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	err = mediaRepo.DeleteInProgress(ctx)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to delete media in progress")
 	}
 
-	// doneC := make(chan struct{})
+	plugin, err := internal_plugin.Open("./plugin.so")
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to open plugin")
+	}
+
+	doneC := make(chan struct{})
 	startJob(&cleanJob{}, time.Hour, doneC)
-	bot, err := newBot(cfg, usersRepo, mediaRepo, doneC)
+	bot, err := NewBot(cfg, plugin, usersRepo, mediaRepo, doneC)
 	if err != nil {
 		log.Fatal().Err(err).Msg("failed to initialize telegram bot")
 	}
@@ -106,20 +95,22 @@ func main() {
 	log.Debug().Msg("handle SIGINT, SIGQUIT, SIGTERM")
 
 	// Stop receiving updates.
-	bot.stop()
+	bot.Stop()
 	// Stop all downloads and other routines.
 	close(doneC)
 	// Close connection with database and other stuff.
-	bot.close()
-	if err := db.Close(); err != nil {
+	bot.Close()
+	if err = db.Close(); err != nil {
 		log.Error().Err(err).Msg("failed to close database connection")
 	}
 	log.Info().Msg("bot has been stopped")
 }
 
-type bot struct {
+type Bot struct {
 	tg       *tgbotapi.BotAPI
 	updatesC tgbotapi.UpdatesChannel
+
+	plugin internal_plugin.Plugin
 
 	usersRepo repo.UsersRepository
 	mediaRepo repo.MediaRepository
@@ -127,16 +118,14 @@ type bot struct {
 	taskC chan task
 	doneC chan struct{}
 
-	plugin internal_plugin.Plugin
-
 	chunksWorkers int
 }
 
-func newBot(
-	cfg *config.Config,
+func NewBot(
+	cfg *config.Config, plugin internal_plugin.Plugin,
 	usersRepo repo.UsersRepository, mediaRepo repo.MediaRepository,
 	doneC chan struct{},
-) (*bot, error) {
+) (*Bot, error) {
 
 	// Create telegram bot client.
 	tg, err := tgbotapi.NewBotAPI(cfg.TgBotToken)
@@ -153,68 +142,50 @@ func newBot(
 	runWorkers(taskC, cfg.MediaNPlaylistWorkers)
 
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 1 // todo: revert
+	u.Timeout = cfg.TgUpdatesTimeout
 	updatesC := tg.GetUpdatesChan(u)
 	// Wait for updates and clear them if you don't want to handle a large backlog of old messages.
 	time.Sleep(time.Second)
 	updatesC.Clear()
 
-	plug, err := internal_plugin.Open("./plugin.so")
-	if err != nil {
-		return nil, fmt.Errorf("failed to open plugin: %w", err)
-	}
-
-	bot := &bot{
+	bot := &Bot{
 		tg:       tg,
 		updatesC: updatesC,
 
+		plugin: plugin,
+
 		usersRepo: usersRepo,
 		mediaRepo: mediaRepo,
-
-		plugin: plug, // todo: put to right order
 
 		taskC: taskC,
 		doneC: doneC,
 
 		chunksWorkers: cfg.ChunksWorkers,
 	}
-	go bot.handleMessages()
+	go bot.HandleUpdates()
 
 	return bot, nil
 }
 
-func (b *bot) stop() {
+func (b *Bot) Stop() {
 	b.tg.StopReceivingUpdates()
 	b.updatesC.Clear()
 }
 
-func (b *bot) close() {
+func (b *Bot) Close() {
 	close(b.taskC)
 }
 
-func (b *bot) handleMessages() {
-	log.Info().Msg("bot has started and waiting for updates")
+func (b *Bot) HandleUpdates() {
+	log.Info().Msg("bot has started and is waiting for updates")
 	for {
 		select {
 		case update := <-b.updatesC:
-			tgUser := update.SentFrom()
-			chat := update.FromChat()
-			user, err := b.checkUser(tgUser.ID, chat.ID)
-			if err != nil {
-				log.Error().Err(err).Msg("failed to check user")
-				send500(b.tg, chat.ID)
-				continue
-			}
-			// It means we don't need to continue flow.
-			// For example it was start command and we just created user.
-			if user == nil {
-				continue
-			}
-			switch {
-			case update.Message != nil:
-				b.handleMessage(update.Message, user)
-			case update.CallbackQuery != nil:
-				b.handleCallback(update.CallbackQuery, user, b.doneC)
+			if from, err := b.HandleUpdate(update); err != nil {
+				log.Error().Err(err).Msg("failed to handle update")
+				if from != 0 {
+					b.Send(from, nil, nil, "Something went wrong. Try again.", nil, false)
+				}
 			}
 		case <-b.doneC:
 			return
@@ -222,64 +193,107 @@ func (b *bot) handleMessages() {
 	}
 }
 
-func (b *bot) handleMessage(message *tgbotapi.Message, user *types.User) {
-	logger := log.With().Int64("user_id", message.From.ID).Logger()
+func (b *Bot) HandleUpdate(update tgbotapi.Update) (int64, error) {
+	var from int64
+	var text string
+	switch {
+	case update.Message != nil:
+		from = update.Message.From.ID
+		text = update.Message.Text
+	case update.CallbackQuery != nil && update.CallbackQuery.Message != nil:
+		from = update.CallbackQuery.Message.Chat.ID
+		text = update.CallbackQuery.Message.Text
+	default:
+		return 0, fmt.Errorf("update is not message and callback: %w", types.ErrInternal)
+	}
+	if err := b.ProcessUpdate(update, from, text); err != nil {
+		return from, fmt.Errorf("failed to process update: %w", err)
+	}
+	return 0, nil
+}
 
+func (b *Bot) ProcessUpdate(update tgbotapi.Update, from int64, text string) error {
+	user, err := b.CheckUser(from)
+	if err != nil {
+		return fmt.Errorf("failed to check user: %w", err)
+	}
+	// It means we don't need to continue flow.
+	// For example, it was start command, and we just created user.
+	if user == nil {
+		return nil
+	}
+	if update.Message != nil && update.Message.IsCommand() {
+		return b.HandleCommand(update.Message, user)
+	}
+	switch {
+	case update.Message != nil:
+		err = b.HandleMessage(update.Message, user)
+	case update.CallbackQuery != nil:
+		err = b.HandleCallback(update.CallbackQuery, user, b.doneC)
+	default:
+		return fmt.Errorf("unkwnon case: %w", types.ErrInternal)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to handle new update: %w", err)
+	}
+	return nil
+}
+
+// todo: resolve all context.TODO
+// todo: use logger context instead of just instance?
+
+func (b *Bot) HandleMessage(message *tgbotapi.Message, user *types.User) error {
 	if message.IsCommand() {
-		b.handleCommand(message, user)
-		return
+		return b.HandleCommand(message, user)
 	}
 
 	entityType, entityID, err := b.plugin.ParseEntity(message.Text)
 	if err != nil {
-		reply(b.tg, message, "Link to the media or playlist is incorrect")
-		return
+		b.Reply(message.From.ID, &message.MessageID, "Link to the media or playlist is incorrect.")
+		return nil
 	}
 	switch entityType {
 	case internal_plugin.EntityMedia:
 	case internal_plugin.EntityPlaylist:
 		if user.PlaylistMaxSize == 0 {
-			reply(b.tg, message, "You are not allowed to download playlists")
-			return
+			b.Reply(message.From.ID, &message.MessageID, "You are not allowed to download playlists.")
+			return nil
 		}
 	default:
-		log.Error().Str("entity_type", string(entityType)).Msg("unknown entity type")
-		reply500(b.tg, message)
-		return
+		return fmt.Errorf("unknown entity type: %s: %w", entityType, err)
 	}
 
-	msg := tgbotapi.NewMessage(message.Chat.ID, "Choose type: audio or video. "+
-		"Most likely the audio will have better sound quality and a much smaller file size")
-	msg.ReplyToMessageID = message.MessageID
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+	text := "Choose type: audio or video. " +
+		"Most likely the audio will have better sound quality and a much smaller file size."
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("Video",
-				prepCbData(
-					topicChooseMediaType, prepareCMTCbValue(entityType, internal_plugin.VideoMediaType, entityID))),
-			tgbotapi.NewInlineKeyboardButtonData("Audio",
-				prepCbData(
-					topicChooseMediaType, prepareCMTCbValue(entityType, internal_plugin.AudioMediaType, entityID))),
+			tgbotapi.NewInlineKeyboardButtonData("📹 Video",
+				prepareCallbackData(
+					TopicChooseMediaType,
+					prepareCallbackValue(entityType, internal_plugin.VideoMediaType, entityID))),
+			tgbotapi.NewInlineKeyboardButtonData("🎧 Audio",
+				prepareCallbackData(
+					TopicChooseMediaType,
+					prepareCallbackValue(entityType, internal_plugin.AudioMediaType, entityID))),
 		),
 	)
-	if _, err := b.tg.Send(msg); err != nil {
-		logger.Error().Err(err).Msg("failed to send message")
-	}
+	b.Send(message.From.ID, nil, &keyboard, text, &message.MessageID, true)
+	return nil
 }
 
-func (b *bot) handleCommand(message *tgbotapi.Message, user *types.User) {
+func (b *Bot) HandleCommand(message *tgbotapi.Message, user *types.User) error {
 	switch message.Command() {
 	case "me":
-		reply(b.tg, message, strconv.Itoa(int(message.From.ID)))
+		b.Reply(message.From.ID, &message.MessageID, strconv.Itoa(int(message.From.ID)))
+		return nil
 	case "pending":
 		media, err := b.mediaRepo.GetInProgress(context.TODO(), user.ID)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to get media in progress")
-			reply500(b.tg, message)
-			return
+			return fmt.Errorf("failed to get media in progress: %w", err)
 		}
 		if len(media) == 0 {
-			reply(b.tg, message, "You don't have media in progress")
-			return
+			b.Reply(message.From.ID, &message.MessageID, "You don't have media in progress.")
+			return nil
 		}
 		text := "Media in progress"
 		for _, entity := range media {
@@ -289,51 +303,55 @@ func (b *bot) handleCommand(message *tgbotapi.Message, user *types.User) {
 			}
 			text = fmt.Sprintf("%s\n%s", text, name)
 		}
-		reply(b.tg, message, text)
+		b.Reply(message.From.ID, &message.MessageID, text)
+		return nil
 	case "help":
-		reply(b.tg, message, "Sorry, I am too lazy to write it.")
+		b.Reply(message.From.ID, &message.MessageID, "Sorry, I am too lazy to write it.")
+		return nil
+	default:
+		return nil
 	}
 }
 
-// Return user as nil if we don't need to continue flow; for example if user is banned.
-func (b *bot) checkUser(tgUserID, chatID int64) (*types.User, error) {
-	logger := log.With().Int64("tg_user_id", tgUserID).Logger()
+// CheckUser returns user as nil if we don't need to continue flow; for example if user is banned.
+func (b *Bot) CheckUser(tgUserID int64) (*types.User, error) {
 	user, err := b.usersRepo.Get(context.TODO(), tgUserID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("failed to get user: %w", err)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
-		logger.Debug().Msg("new user")
-		if _, err := b.usersRepo.Create(context.TODO(), tgUserID); err != nil {
+		if _, err = b.usersRepo.Create(context.TODO(), tgUserID); err != nil {
 			return nil, fmt.Errorf("failed to create user: %w", err)
 		}
-		send(b.tg, chatID, "Send link to start downloading")
+		b.Reply(tgUserID, nil, "Send link to start downloading.")
 		return nil, nil
 	}
 	if user.AudioMaxSize == 0 && user.VideoMaxSize == 0 {
-		send(b.tg, chatID, "You are not allowed to download media")
+		b.Reply(tgUserID, nil, "You are not allowed to download media.")
 		return nil, nil
 	}
 	return user, nil
 }
 
-func (b *bot) handleCallback(callback *tgbotapi.CallbackQuery, user *types.User, doneC chan struct{}) {
+func (b *Bot) HandleCallback(callback *tgbotapi.CallbackQuery, user *types.User, doneC chan struct{}) error {
 	topic, value := parseCbData(callback.Data)
 	switch topic {
-	case topicChooseMediaType:
-		b.handleChooseMediaTypeCallback(callback.Message, value, user, doneC)
-		removeMarkup(b.tg, callback.Message.Chat.ID, callback.Message.MessageID)
+	case TopicChooseMediaType:
+		if err := b.HandleChooseMediaType(callback.Message, value, user, doneC); err != nil {
+			return fmt.Errorf("failed to choose media type: %w", err)
+		}
+		b.RemoveMarkup(callback.Message.Chat.ID, callback.Message.MessageID)
+		return nil
 	default:
-		log.Error().Str("topic", topic).Msg("unknown topic")
-		reply500(b.tg, callback.Message)
+		return fmt.Errorf("unknown topic: %s: %w", topic, types.ErrInternal)
 	}
 }
 
-func (b *bot) handleChooseMediaTypeCallback(
+func (b *Bot) HandleChooseMediaType(
 	message *tgbotapi.Message, value string, user *types.User, doneC chan struct{},
-) {
+) error {
 
-	entityType, mediaTyp, uri := parseCMTCbValue(value)
+	entityType, mediaTyp, uri := parseCallbackValue(value)
 	mediaLink := &types.MediaLink{URI: uri, Type: mediaTyp}
 
 	/*
@@ -341,17 +359,15 @@ func (b *bot) handleChooseMediaTypeCallback(
 	*/
 	multimedia, err := b.mediaRepo.GetInProgress(context.TODO(), user.ID)
 	if err != nil {
-		reply500(b.tg, message)
-		return
+		return fmt.Errorf("failed to get media in progress: %w", err)
 	}
 	if len(multimedia) != 0 {
-		reply(b.tg, message, "You already have media which are in progress")
-		return
+		b.Reply(message.From.ID, &message.MessageID, "You already have media which are in progress.")
+		return nil
 	}
 	media, err := b.mediaRepo.Create(context.TODO(), user.ID, message.MessageID, mediaLink.URI, mediaLink.Type)
 	if err != nil {
-		reply500(b.tg, message)
-		return
+		return fmt.Errorf("failed to create media for user: %w", err)
 	}
 
 	var downloadTask task
@@ -360,7 +376,7 @@ func (b *bot) handleChooseMediaTypeCallback(
 		downloadTask = newDownloadPlaylistTask(b.plugin,
 			b.tg, message, user, media.ID, mediaLink, b.mediaRepo, b.taskC, b.chunksWorkers, doneC)
 	case internal_plugin.EntityMedia:
-		downloadTask = newDownloadMediaTask(b.plugin, b.tg, message, user, media, mediaLink, b.mediaRepo, b.chunksWorkers, doneC)
+		downloadTask = newDownloadMediaTask(b.plugin, mediaLink, "", b.chunksWorkers, doneC)
 	default:
 		log.Error().Str("value", value).Msg("unknown entity type for cmt callback")
 		return
@@ -371,6 +387,45 @@ func (b *bot) handleChooseMediaTypeCallback(
 		reply(b.tg, message, fmt.Sprintf("Bot has started to download your %s and will send to you ASAP", entityType))
 	default:
 		reply(b.tg, message, "All workers are busy, try again later")
+	}
+}
+
+func (b *Bot) Reply(chatID int64, messageID *int, text string) {
+	b.Send(chatID, nil, nil, text, messageID, true)
+}
+
+func (b *Bot) RemoveMarkup(chatID int64, messageID int) {
+	if _, err := b.tg.Send(&tgbotapi.EditMessageReplyMarkupConfig{
+		BaseEdit: tgbotapi.BaseEdit{
+			ChatID:    chatID,
+			MessageID: messageID,
+		},
+	}); err != nil {
+		log.Error().Err(err).Msg("failed to delete reply buttons from message")
+	}
+}
+
+func (b *Bot) Send(
+	chatID int64,
+	replyKeyboard *tgbotapi.ReplyKeyboardMarkup,
+	inlineKeyboard *tgbotapi.InlineKeyboardMarkup,
+	text string, replyTo *int, notify bool,
+) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	if replyTo != nil {
+		msg.ReplyToMessageID = *replyTo
+	}
+	msg.ParseMode = tgbotapi.ModeHTML
+	msg.ReplyMarkup = tgbotapi.NewRemoveKeyboard(false)
+	msg.DisableNotification = !notify
+	if replyKeyboard != nil {
+		msg.ReplyMarkup = replyKeyboard
+	}
+	if inlineKeyboard != nil {
+		msg.ReplyMarkup = inlineKeyboard
+	}
+	if _, err := b.tg.Send(msg); err != nil {
+		log.Error().Err(err).Msg("failed to send message to user")
 	}
 }
 
@@ -797,7 +852,7 @@ func (t *downloadPlaylistTask) download() error {
 		// }
 		mediaLink := &types.MediaLink{URI: entry, Type: t.mediaLink.Type}
 		// t.taskC <- newDownloadMediaTask(t.plugin, t.tg, t.message, t.user, media, mediaLink, t.mediaRepo, t.chunksWorkers, t.doneC)
-		t.taskC <- newDownloadMediaTask(t.plugin, nil, nil, nil, nil, mediaLink, nil, t.chunksWorkers, t.doneC)
+		t.taskC <- newDownloadMediaTask(t.plugin, mediaLink, "", t.chunksWorkers, t.doneC)
 	}
 	// if err := t.mediaRepo.UpdateState(context.TODO(), t.mediaID, types.DoneMediaState); err != nil {
 	// 	log.Error().Err(err).Int64("media_id", t.mediaID).Msg("failed to set playlist as done")
@@ -806,35 +861,22 @@ func (t *downloadPlaylistTask) download() error {
 }
 
 type downloadMediaTask struct {
-	plugin internal_plugin.Plugin
-	// mediaRepo repo.MediaRepository
-	// tg            *tgbotapi.BotAPI
-	// message       *tgbotapi.Message
-	// user          *types.User
-	// media         *types.Media
+	plugin        internal_plugin.Plugin
 	mediaLink     *types.MediaLink
-	doneC         chan struct{}
 	mediaFolder   string
 	chunksWorkers int
+	doneC         chan struct{}
 }
 
 func newDownloadMediaTask(
-	plug internal_plugin.Plugin,
-	tg *tgbotapi.BotAPI, message *tgbotapi.Message, user *types.User,
-	media *types.Media, mediaLink *types.MediaLink, mediaRepo repo.MediaRepository,
-	chunksWorker int, doneC chan struct{},
+	plug internal_plugin.Plugin, mediaLink *types.MediaLink, mediaFolder string, chunksWorker int, doneC chan struct{},
 ) *downloadMediaTask {
-
 	return &downloadMediaTask{
-		plugin: plug,
-		// tg:            tg,
-		// message:       message,
-		// user:          user,
-		// media:         media,
-		mediaLink: mediaLink,
-		// mediaRepo:     mediaRepo,
-		doneC:         doneC,
+		plugin:        plug,
+		mediaLink:     mediaLink,
+		mediaFolder:   mediaFolder,
 		chunksWorkers: chunksWorker,
+		doneC:         doneC,
 	}
 }
 
@@ -879,7 +921,7 @@ func (t *downloadMediaTask) download() error {
 		Int64("media_size", mediaInfo.size).
 		Logger()
 
-	if mediaInfo.size > maxTgAPIFileSize {
+	if mediaInfo.size > MaxTgAPIFileSize {
 		logger.Warn().
 			Msg("be aware that media size is more than 50mb, and you need to use custom (local) telegram bot api server")
 	}
@@ -920,7 +962,7 @@ func (t *downloadMediaTask) download() error {
 
 func getRandomChunkSize() int64 {
 	//nolint:gosec // it is ok to have weak generator
-	return rand.Int63n(maxChunkSize-minChunkSize) + minChunkSize
+	return rand.Int63n(MaxChunkSize-MinChunkSize) + MinChunkSize
 }
 
 type job interface {
@@ -981,12 +1023,12 @@ func checkFile(path string, info fs.FileInfo, err error) error {
 }
 
 // prepCbData returns callback data delimiter-ed by topic and value.
-func prepCbData(topic, value string) string {
-	return fmt.Sprintf("%s%s%s", topic, cbDelimiter, value)
+func prepareCallbackData(topic, value string) string {
+	return fmt.Sprintf("%s%s%s", topic, CallbackDelimiter, value)
 }
 
 func parseCbData(data string) (topic, value string) {
-	parts := strings.SplitN(data, cbDelimiter, 2)
+	parts := strings.SplitN(data, CallbackDelimiter, 2)
 	if len(parts) != 2 {
 		return
 	}
@@ -995,49 +1037,14 @@ func parseCbData(data string) (topic, value string) {
 	return
 }
 
-func prepareCMTCbValue(entity internal_plugin.Entity, mediaType internal_plugin.MediaType, uri string) string {
-	return fmt.Sprintf("%s%s%s%s%s", entity, cbCMTValDelimiter, mediaType, cbCMTValDelimiter, uri)
+func prepareCallbackValue(entity internal_plugin.Entity, mediaType internal_plugin.MediaType, uri string) string {
+	return fmt.Sprintf("%s%s%s%s%s", entity, CallbackValueDelimiter, mediaType, CallbackValueDelimiter, uri)
 }
 
-func parseCMTCbValue(value string) (internal_plugin.Entity, internal_plugin.MediaType, string) {
-	parts := strings.SplitN(value, cbCMTValDelimiter, 3)
+func parseCallbackValue(value string) (internal_plugin.Entity, internal_plugin.MediaType, string) {
+	parts := strings.SplitN(value, CallbackValueDelimiter, 3)
 	if len(parts) != 3 {
 		return "", "", ""
 	}
 	return internal_plugin.Entity(parts[0]), internal_plugin.MediaType(parts[1]), parts[2]
-}
-
-func reply(tg *tgbotapi.BotAPI, message *tgbotapi.Message, text string) {
-	msg := tgbotapi.NewMessage(message.Chat.ID, text)
-	msg.ReplyToMessageID = message.MessageID
-	if _, err := tg.Send(msg); err != nil {
-		log.Error().Err(err).Msg("failed to send message")
-	}
-}
-
-// reply500 sends internal server error to user.
-func reply500(tg *tgbotapi.BotAPI, message *tgbotapi.Message) {
-	reply(tg, message, "Something went wrong, try again later")
-}
-
-func send(tg *tgbotapi.BotAPI, chatID int64, text string) {
-	msg := tgbotapi.NewMessage(chatID, text)
-	if _, err := tg.Send(msg); err != nil {
-		log.Error().Err(err).Msg("failed to send message")
-	}
-}
-
-func send500(tg *tgbotapi.BotAPI, chatID int64) {
-	send(tg, chatID, "Something went wrong, try again later")
-}
-
-func removeMarkup(tg *tgbotapi.BotAPI, chatID int64, messageID int) {
-	if _, err := tg.Send(&tgbotapi.EditMessageReplyMarkupConfig{
-		BaseEdit: tgbotapi.BaseEdit{
-			ChatID:    chatID,
-			MessageID: messageID,
-		},
-	}); err != nil {
-		log.Error().Err(err).Msg("failed to delete reply buttons from message")
-	}
 }

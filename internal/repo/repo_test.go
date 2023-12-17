@@ -1,17 +1,15 @@
-package repo_test
+package repo
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lavrd/media-dl-tg/internal/repo"
 	"github.com/lavrd/media-dl-tg/internal/types"
 	internal_plugin "github.com/lavrd/media-dl-tg/pkg/plugin"
 )
@@ -26,14 +24,14 @@ func TestUserRepository(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()
 
-	db, err := repo.OpenDBAndMigrate("", repo.ModeMemory)
+	db, err := OpenDBAndMigrate("", "file://../../migrations", ModeMemory)
 	r.NoError(err)
 	defer func() {
 		if err = db.Close(); err != nil {
 			log.Error().Err(err).Msg("failed to close database")
 		}
 	}()
-	usersRepo, _ := repo.New(db)
+	usersRepo, _ := New(db)
 
 	user, err := usersRepo.Create(ctx, tgUserID)
 	r.NoError(err)
@@ -72,14 +70,14 @@ func TestMediaRepository(t *testing.T) {
 	r := require.New(t)
 	ctx := context.Background()
 
-	db, err := repo.OpenDBAndMigrate("", repo.ModeMemory)
+	db, err := OpenDBAndMigrate("", "file://../../migrations", ModeMemory)
 	r.NoError(err)
 	defer func() {
 		if err = db.Close(); err != nil {
 			log.Error().Err(err).Msg("failed to close database")
 		}
 	}()
-	usersRepo, mediaRepo := repo.New(db)
+	usersRepo, mediaRepo := New(db)
 
 	user, err := usersRepo.Create(ctx, tgUserID)
 	r.NoError(err)
@@ -244,20 +242,4 @@ func getMultimedia(r *require.Assertions, db *sqlx.DB, userID int64) []*media {
 	r.NoError(err)
 	r.NotNil(multimedia)
 	return multimedia
-}
-
-// media is a copy of the same structure from repo.go.
-//
-//nolint:govet // disable field aligment for better reading and keep as it in .sql files
-type media struct {
-	ID          int64                     `db:"id"`
-	UserID      int64                     `db:"user_id"`
-	TgMessageID int                       `db:"tg_message_id"`
-	URI         string                    `db:"uri"`
-	Title       string                    `db:"title"`
-	State       types.MediaState          `db:"state"`
-	Type        internal_plugin.MediaType `db:"type"`
-	CreatedAt   time.Time                 `db:"created_at"`
-	UpdatedAt   time.Time                 `db:"updated_at"`
-	DoneAt      *time.Time                `db:"done_at"`
 }
