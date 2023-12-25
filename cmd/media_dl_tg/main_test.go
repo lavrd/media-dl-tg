@@ -25,8 +25,8 @@ func Test(t *testing.T) {
 	r.NoError(err)
 
 	const workers = 10
-	taskC := make(chan task)
-	runWorkers(taskC, workers)
+	taskC := make(chan Task)
+	RunWorkers(taskC, workers)
 	mediaLink := &types.MediaLink{URI: "", Type: internal_plugin.VideoMediaType}
-	taskC <- newDownloadMediaTask(plugin, mediaLink, "./", 10, nil)
+	taskC <- NewDownloadMediaTask(plugin, mediaLink, "./", 10, nil)
 }

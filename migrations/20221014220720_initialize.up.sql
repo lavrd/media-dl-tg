@@ -1,7 +1,7 @@
 create table users
 (
     id                integer primary key autoincrement not null,
-    tg_user_id        integer unique                    not null,
+    tg_user_id integer unique                    not null,
     -- Maximum allowable size for downloading audio for a user.
     audio_max_size    integer                           not null default 0,
     -- Maximum allowable size for downloading video for a user.
@@ -30,3 +30,5 @@ create table media
     updated_at    datetime                                             not null default current_timestamp,
     created_at    datetime                                             not null default current_timestamp
 );
+
+-- todo: media unique by user_id / uri?

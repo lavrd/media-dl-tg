@@ -7,6 +7,8 @@ import (
 	internal_plugin "github.com/lavrd/media-dl-tg/pkg/plugin"
 )
 
+const MaxTgAPIFileSize = 50 * 1024 * 1024 // 50mb
+
 var (
 	ErrInternal     = errors.New("internal error")
 	ErrSizeExceeded = errors.New("size is exceeded")
